@@ -1,6 +1,6 @@
 [project]
 name = "py-attio"
-version = "0.2.1"
+version = "0.2.2"
 description = "A lightweight Python wrapper for the Attio API."
 authors = [{ name = "Benjamin Hawn", email = "ben@benjaminhawn.com" }]
 readme = "README.md"
