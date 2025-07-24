@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-py_attio/__init__.py
-py_attio/client.py
-py_attio/utils.py
-py_attio.egg-info/PKG-INFO
-py_attio.egg-info/SOURCES.txt
-py_attio.egg-info/dependency_links.txt
-py_attio.egg-info/top_level.txt
