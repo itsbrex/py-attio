@@ -73,11 +73,29 @@ class Client(BaseClient):
 
 
 	def create_record(self, object_id, payload):
-		return self._request("POST", f"/objects/{object_id}/records")
+		return self._request("POST", f"/objects/{object_id}/records", json=payload)
 
 
 	def assert_record(self, object_id, payload):
-		return self._request("PUT", f"/objects/{object_id}/records")
+		return self._request("PUT", f"/objects/{object_id}/records", json=payload)
+
+
+	# Lists
+
+	def list_lists(self):
+		return self._request("GET", "/lists")
+
+
+	def create_list(self, payload):
+		return self._request("POST", "/lists", json=payload)
+
+
+	def get_list(self, list_id):
+		return self._request("GET", f"/lists/{list_id}")
+
+
+	def update_list(self, list_id, payload):
+		return self._request("PATCH", f"/lists/{list_id}", json=payload)
 
 
 
