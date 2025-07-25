@@ -1,5 +1,5 @@
 <h3 align="center">
-  <img src="https://github.com/benjaminhawn/py-attio/blob/main/assets/py-attio-black.svg" width="40%">
+  <img src="https://raw.githubusercontent.com/benjaminhawn/py-attio/refs/heads/main/assets/py-attio.svg" width="40%">
   <br><br>
   A lightweight Python wrapper for the Attio API.
 </h3>
