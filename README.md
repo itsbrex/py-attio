@@ -32,7 +32,7 @@ You can install `py-attio` from PyPI using `pip`:
 --------
 #### Example: Retrieving a list of Objects
 ```
-from py_attio.client import Client
+from py_attio import Client
 
 client = Client("ATTIO_API_KEY")
 objects = client.list_objects()
@@ -42,7 +42,7 @@ print(objects)
 
 #### Example: Creating a Record
 ```
-from py_attio.client import Client
+from py_attio import Client
 
 client = Client("ATTIO_API_KEY")
 
