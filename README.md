@@ -32,9 +32,9 @@ You can install `py-attio` from PyPI using `pip`:
 --------
 #### Example: Retrieving a list of Objects
 ```
-from py_attio import Client
+import py_attio
 
-client = Client("ATTIO_API_KEY")
+client = py_attio.Client("ATTIO_API_KEY")
 objects = client.list_objects()
 
 print(objects)
@@ -42,14 +42,22 @@ print(objects)
 
 #### Example: Creating a Record
 ```
-from py_attio import Client
+import py_attio
 
-client = Client("ATTIO_API_KEY")
+client = py_attio.Client("ATTIO_API_KEY")
 
 object = "companies"
 payload = {"data": {"values": {"domains": ["example.com"]}}}
 
 client.create_record(object, payload)
+```
+
+#### Example: Viewing access token metadata
+```
+import py_attio
+
+client = py_attio.Client("ATTIO_API_KEY")
+print(client.identify_self())
 ```
 
 ⛓ Links
