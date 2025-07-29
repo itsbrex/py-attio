@@ -1,4 +1,5 @@
 import requests
+from typing import Dict
 
 
 class BaseClient:
