@@ -173,7 +173,7 @@ class Client(BaseClient):
 
 	# Threads
 
-	def list_threads(self, query: Dict[str: Any]):
+	def list_threads(self, query: Dict[str, Any]):
 		return self._request("GET", "/threads", params=query)
 
 
