@@ -172,8 +172,8 @@ class Client(BaseClient):
 
 	# Threads
 
-	def list_threads(self):
-		return self._request("GET", "/threads")
+	def list_threads(self, query: Dict[str: Any]):
+		return self._request("GET", "/threads", params=query)
 
 
 	def get_thread(self, thread_id: str):
