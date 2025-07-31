@@ -208,7 +208,7 @@ class Client(BaseClient):
 
     # Threads
 
-    def list_threads(self, query: Dict[str:Any]):
+    def list_threads(self, query: Dict[str, Any]):
         """List threads of comments on a record or list entry."""
         return self._request("GET", "/threads", params=query)
 
