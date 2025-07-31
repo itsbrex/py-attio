@@ -76,9 +76,11 @@ class Client(BaseClient):
 
     # Attributes
 
-    def list_attributes(self, target: str, identifier: str):
+    def list_attributes(self, target: str, identifier: str, query=None):
         """Lists all attributes defined on a specific object or list."""
-        return self._request("GET", f"/{target}/{identifier}/attributes")
+        if query is None:
+            query = {}
+        return self._request("GET", f"/{target}/{identifier}/attributes", params=query)
 
     def create_attribute(self, target: str, identifier: str, payload: Dict[str, Any]):
         """Creates a new attribute on either an object or a list."""
@@ -98,10 +100,12 @@ class Client(BaseClient):
 
     # Records
 
-    def list_records(self, object_id: str, params=None):
+    def list_records(self, object_id: str, payload=None):
         """Lists people, company or other records, with the option to filter and sort results."""
+        if payload is None:
+            payload = {}
         return self._request(
-            "POST", f"/objects/{object_id}/records/query", params=params
+            "POST", f"/objects/{object_id}/records/query", json=payload
         )
 
     def get_record(self, object_id: str, record_id: str):
@@ -136,9 +140,11 @@ class Client(BaseClient):
 
     # Entries
 
-    def list_entries(self, list_id: str):
+    def list_entries(self, list_id: str, payload=None):
         """Lists entries in a given list, with the option to filter and sort results."""
-        return self._request("POST", f"/lists/{list_id}/entries/query")
+        if payload is None:
+            payload = {}
+        return self._request("POST", f"/lists/{list_id}/entries/query", json=payload)
 
     def create_entry(self, list_id: str, payload: Dict[str, Any]):
         """Adds a record to a list as a new list entry."""
@@ -168,9 +174,11 @@ class Client(BaseClient):
 
     # Notes
 
-    def list_notes(self):
+    def list_notes(self, query=None):
         """List notes for all records or for a specific record."""
-        return self._request("GET", "/notes")
+        if query is None:
+            query = {}
+        return self._request("GET", "/notes", params=query)
 
     def create_note(self, payload: Dict[str, Any]):
         """Creates a new note for a given record."""
@@ -186,9 +194,11 @@ class Client(BaseClient):
 
     # Tasks
 
-    def list_tasks(self):
+    def list_tasks(self, query=None):
         """List all tasks. Results are sorted by creation date, from oldest to newest."""
-        return self._request("GET", "/tasks")
+        if query is None:
+            query = {}
+        return self._request("GET", "/tasks", params=query)
 
     def create_task(self, payload: Dict[str, Any]):
         """Creates a new task."""
@@ -227,13 +237,15 @@ class Client(BaseClient):
         return self._request("GET", f"/comments/{comment_id}")
 
     def delete_comment(self, comment_id: str):
-        """Deletes a comment by ID. If deleting a comment at the head of a thread, all messages in the thread are also deleted."""
+        """Deletes a comment by ID. If deleting the head of a thread, messages are also deleted."""
         return self._request("DELETE", f"/comments/{comment_id}")
 
     # Webhooks
 
-    def list_webhooks(self):
+    def list_webhooks(self, query=None):
         """Get all of the webhooks in the workspace."""
+        if query is None:
+            query = {}
         return self._request("GET", "/webhooks")
 
     def create_webhook(self, payload: Dict[str, Any]):
@@ -255,5 +267,5 @@ class Client(BaseClient):
     # Meta
 
     def identify_self(self):
-        """Identify the current access token, the workspace it is linked to, and any permissions it has."""
+        """Identify the current access token, linked workspace, and permissions."""
         return self._request("GET", "/self")
