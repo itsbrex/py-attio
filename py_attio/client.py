@@ -246,7 +246,7 @@ class Client(BaseClient):
         """Get all of the webhooks in the workspace."""
         if query is None:
             query = {}
-        return self._request("GET", "/webhooks")
+        return self._request("GET", "/webhooks", params=query)
 
     def create_webhook(self, payload: Dict[str, Any]):
         """Create a webhook and associated subscriptions."""
