@@ -1,5 +1,7 @@
 name: Claude Code
 
+# Triggers Claude when mentioned in issues, PR comments, or reviews
+# Requires CLAUDE_CODE_OAUTH_TOKEN secret to be configured in repository settings
 on:
   issue_comment:
     types: [created]
@@ -12,33 +14,72 @@ on:
 
 jobs:
   claude:
+    # Only run when @claude is mentioned in relevant events
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    
     runs-on: ubuntu-latest
+    
+    # Minimal permissions following security best practices
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      contents: read           # Read repository files
+      pull-requests: read      # Read PR information
+      issues: read            # Read issue information
+      id-token: write         # Required for OAuth authentication
+      actions: read           # Required for Claude to read CI results on PRs
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # Fetch minimal history for performance
           fetch-depth: 1
 
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@beta
         with:
+          # OAuth token for authentication (preferred over API keys)
+          # Configure this secret in repository Settings -> Secrets and variables -> Actions
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
-          # This is an optional setting that allows Claude to read CI results on PRs
+          # Allow Claude to read CI results on PRs for better context
           additional_permissions: |
             actions: read
+          
+          # Py-attio specific configuration: Allow Python testing and examples
+          allowed_tools: "Bash(python examples/*/*.py),Bash(python -m pytest),Bash(pip install -e .)"
+          
+          # Custom instructions for py-attio Python API wrapper project
+          custom_instructions: |
+            This is a Python API wrapper for Attio CRM (py-attio).
+            
+            Development Guidelines:
+            - Follow PEP 8 coding standards
+            - Ensure all API methods include proper docstrings
+            - Test changes with the example scripts in /examples/
+            - Single dependency on requests library only
+            - All methods should return JSON responses from the API
+            - Follow existing method naming patterns (snake_case matching API operations)
+            
+            API Method Pattern:
+            ```python
+            def method_name(self, required_param, optional_param=None, payload=None):
+                """Docstring describing the endpoint"""
+                endpoint = f"v2/endpoint/{required_param}"
+                params = {}
+                if optional_param:
+                    params['optional_param'] = optional_param
+                return self._get(endpoint, params=params)  # or _post, _put, _delete
+            ```
+            
+            Testing:
+            - Run example scripts to verify functionality
+            - No formal test suite currently exists
+            - Use: python examples/objects/get_all_objects.py
           
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
           # model: "claude-opus-4-20250514"
@@ -49,16 +90,6 @@ jobs:
           # Optional: Trigger when specific user is assigned to an issue
           # assignee_trigger: "claude-bot"
           
-          # Optional: Allow Claude to run specific commands
-          # allowed_tools: "Bash(npm install),Bash(npm run build),Bash(npm run test:*),Bash(npm run lint:*)"
-          
-          # Optional: Add custom instructions for Claude to customize its behavior for your project
-          # custom_instructions: |
-          #   Follow our coding standards
-          #   Ensure all new code has tests
-          #   Use TypeScript for new files
-          
           # Optional: Custom environment variables for Claude
           # claude_env: |
-          #   NODE_ENV: test
-
+          #   PYTHONPATH: /home/runner/work/py-attio/py-attio
