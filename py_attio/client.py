@@ -57,7 +57,7 @@ class BaseClient:
         try:
             error_data = response.json()
             error_message = error_data.get('message', response.text)
-        except:
+        except (ValueError, requests.exceptions.JSONDecodeError):
             error_message = response.text
 
         if status_code == 400:
@@ -87,6 +87,8 @@ class Client(BaseClient):
 
     def get_object(self, object_id: str):
         """Gets a single object by its object_id or slug"""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
         return self._request("GET", f"/objects/{object_id}")
 
     def list_objects(self):
@@ -99,10 +101,16 @@ class Client(BaseClient):
 
     def update_object(self, object_id: str, payload: Dict[str, Any]):
         """Updates a single object."""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+        if not payload:
+            raise ValueError("payload is required and cannot be empty")
         return self._request("PATCH", f"/objects/{object_id}", json=payload)
 
     def delete_object(self, object_id: str):
         """Deletes a single object by its object_id or slug."""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
         return self._request("DELETE", f"/objects/{object_id}")
 
     # Custom Object Helper Methods
@@ -118,12 +126,14 @@ class Client(BaseClient):
 
     def get_object_schema(self, object_id: str):
         """Gets the complete schema for an object including all attributes."""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+            
         object_data = self.get_object(object_id)
         if object_data and 'data' in object_data:
             # Get attributes for this object
             attributes = self.list_attributes('objects', object_id)
-            if 'data' in object_data:
-                object_data['data']['attributes'] = attributes.get('data', [])
+            object_data['data']['attributes'] = attributes.get('data', [])
         return object_data
 
     # Attributes
@@ -166,10 +176,18 @@ class Client(BaseClient):
 
     def get_record(self, object_id: str, record_id: str):
         """Gets a single person, company or other record by its record_id."""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+        if not record_id or not record_id.strip():
+            raise ValueError("record_id is required and cannot be empty")
         return self._request("GET", f"/objects/{object_id}/records/{record_id}")
 
     def create_record(self, object_id: str, payload: Dict[str, Any]):
         """Creates a new person, company or other record."""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+        if not payload:
+            raise ValueError("payload is required and cannot be empty")
         return self._request("POST", f"/objects/{object_id}/records", json=payload)
 
     def assert_record(self, object_id: str, payload: Dict[str, Any]):
@@ -178,10 +196,20 @@ class Client(BaseClient):
 
     def update_record(self, object_id: str, record_id: str, payload: Dict[str, Any]):
         """Updates a single person, company or other record by its record_id."""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+        if not record_id or not record_id.strip():
+            raise ValueError("record_id is required and cannot be empty")
+        if not payload:
+            raise ValueError("payload is required and cannot be empty")
         return self._request("PATCH", f"/objects/{object_id}/records/{record_id}", json=payload)
 
     def delete_record(self, object_id: str, record_id: str):
         """Deletes a single person, company or other record by its record_id."""
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+        if not record_id or not record_id.strip():
+            raise ValueError("record_id is required and cannot be empty")
         return self._request("DELETE", f"/objects/{object_id}/records/{record_id}")
 
     # Lists
@@ -373,16 +401,20 @@ class Client(BaseClient):
         Yields:
             Individual records from all pages
         """
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+            
         if payload is None:
             payload = {}
         
-        # Set initial pagination parameters
-        payload.setdefault('limit', page_size)
-        offset = payload.get('offset', 0)
+        # Create a copy to avoid mutating the input payload
+        query_payload = payload.copy()
+        query_payload.setdefault('limit', page_size)
+        offset = query_payload.get('offset', 0)
         
         while True:
-            payload['offset'] = offset
-            response = self.list_records(object_id, payload)
+            query_payload['offset'] = offset
+            response = self.list_records(object_id, query_payload)
             
             if 'data' not in response:
                 break
@@ -413,16 +445,20 @@ class Client(BaseClient):
         Yields:
             Individual entries from all pages
         """
+        if not list_id or not list_id.strip():
+            raise ValueError("list_id is required and cannot be empty")
+            
         if payload is None:
             payload = {}
             
-        # Set initial pagination parameters
-        payload.setdefault('limit', page_size)
-        offset = payload.get('offset', 0)
+        # Create a copy to avoid mutating the input payload
+        query_payload = payload.copy()
+        query_payload.setdefault('limit', page_size)
+        offset = query_payload.get('offset', 0)
         
         while True:
-            payload['offset'] = offset
-            response = self.list_entries(list_id, payload)
+            query_payload['offset'] = offset
+            response = self.list_entries(list_id, query_payload)
             
             if 'data' not in response:
                 break
@@ -452,6 +488,13 @@ class Client(BaseClient):
         Returns:
             List of created record responses
         """
+        if not object_id or not object_id.strip():
+            raise ValueError("object_id is required and cannot be empty")
+        if not records:
+            raise ValueError("records list cannot be empty")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than 0")
+            
         results = []
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
