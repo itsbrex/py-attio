@@ -1,78 +1,96 @@
 name: Claude Code Review
 
+# Automatically reviews new PRs and updates to existing PRs
+# Requires CLAUDE_CODE_OAUTH_TOKEN secret to be configured in repository settings
 on:
   pull_request:
     types: [opened, synchronize]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    # Only run on Python-related file changes for efficiency
+    paths:
+      - "py_attio/**/*.py"
+      - "examples/**/*.py"
+      - "*.py"
+      - "pyproject.toml"
+      - "setup.py"
+      - "requirements*.txt"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
+    # Optional: Filter by PR author (uncomment to enable)
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
     
     runs-on: ubuntu-latest
+    
+    # Minimal permissions following security best practices
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      id-token: write
+      contents: read           # Read repository files
+      pull-requests: read      # Read PR information
+      issues: read            # Read issue information
+      id-token: write         # Required for OAuth authentication
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # Fetch minimal history for performance
           fetch-depth: 1
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@beta
         with:
+          # OAuth token for authentication (preferred over API keys)
+          # Configure this secret in repository Settings -> Secrets and variables -> Actions
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
           # model: "claude-opus-4-20250514"
           
-          # Direct prompt for automated review (no @claude mention needed)
+          # Allow Claude to run Python tests and examples during review
+          allowed_tools: "Bash(python examples/*/*.py),Bash(python -m pytest),Bash(pip install -e .)"
+          
+          # Py-attio specific automated review prompt
           direct_prompt: |
-            Please review this pull request and provide feedback on:
-            - Code quality and best practices
-            - Potential bugs or issues
-            - Performance considerations
-            - Security concerns
-            - Test coverage
+            Please review this pull request for the py-attio Python API wrapper and provide feedback on:
             
-            Be constructive and helpful in your feedback.
+            **Code Quality & Standards:**
+            - PEP 8 compliance and Python best practices
+            - Proper docstring format and completeness
+            - Consistent naming conventions (snake_case matching API operations)
+            - Single dependency on requests library maintained
+            
+            **API Wrapper Specific:**
+            - API method pattern consistency (endpoint construction, params handling)
+            - JSON response handling
+            - Error handling for HTTP status codes
+            - Proper use of _get, _post, _put, _delete methods
+            
+            **Security & Performance:**
+            - Input validation and sanitization
+            - No exposure of API keys or secrets
+            - Efficient request handling
+            - Potential performance bottlenecks
+            
+            **Testing & Examples:**
+            - Example scripts in /examples/ directory work correctly
+            - API methods can be tested with example usage
+            - No breaking changes to existing API
+            
+            **Documentation:**
+            - Method docstrings describe endpoints clearly
+            - Parameter descriptions are complete
+            - Return value documentation
+            
+            Be constructive and helpful in your feedback. Focus on maintainability and consistency with the existing codebase.
 
-          # Optional: Use sticky comments to make Claude reuse the same comment on subsequent pushes to the same PR
-          # use_sticky_comment: true
+          # Use sticky comments to update the same comment on subsequent pushes
+          use_sticky_comment: true
           
-          # Optional: Customize review based on file types
-          # direct_prompt: |
-          #   Review this PR focusing on:
-          #   - For TypeScript files: Type safety and proper interface usage
-          #   - For API endpoints: Security, input validation, and error handling
-          #   - For React components: Performance, accessibility, and best practices
-          #   - For tests: Coverage, edge cases, and test quality
-          
-          # Optional: Different prompts for different authors
-          # direct_prompt: |
-          #   ${{ github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR' && 
-          #   'Welcome! Please review this PR from a first-time contributor. Be encouraging and provide detailed explanations for any suggestions.' ||
-          #   'Please provide a thorough code review focusing on our coding standards and best practices.' }}
-          
-          # Optional: Add specific tools for running tests or linting
-          # allowed_tools: "Bash(npm run test),Bash(npm run lint),Bash(npm run typecheck)"
-          
-          # Optional: Skip review for certain conditions
+          # Skip review for certain conditions (uncomment to enable)
           # if: |
           #   !contains(github.event.pull_request.title, '[skip-review]') &&
-          #   !contains(github.event.pull_request.title, '[WIP]')
-
+          #   !contains(github.event.pull_request.title, '[WIP]') &&
+          #   !contains(github.event.pull_request.title, '[DRAFT]')
