@@ -120,6 +120,27 @@ class Client(BaseClient):
         """Use this endpoint to create or update people, companies and other records."""
         return self._request("PUT", f"/objects/{object_id}/records", json=payload)
 
+    def update_record(self, object_id: str, record_id: str, payload: Dict[str, Any]):
+        """Use this endpoint to update people, companies, and other records."""
+        return self._request(
+            "PUT", f"/objects/{object_id}/records/{record_id}", json=payload
+        )
+
+    def delete_record(self, object_id: str, record_id: str):
+        """Deletes a single record (e.g. a company or person) by ID."""
+        return self._request("DELETE", f"/objects/{object_id}/records/{record_id}")
+
+    def list_record_values(self, object_id: str, record_id: str, attribute: str):
+        """Gets all values for a given attribute on a record."""
+        return self._request(
+            "GET",
+            f"/objects/{object_id}/records/{record_id}/attributes/{attribute}/values",
+        )
+
+    def list_record_entries(self, object_id: str, record_id: str):
+        """List all entries, across all lists, for which this record is the parent."""
+        return self._request("GET", f"/objects/{object_id}/records/{record_id}/entries")
+
     # Lists
 
     def list_lists(self):
