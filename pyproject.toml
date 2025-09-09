@@ -22,3 +22,26 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["py_attio", "py_attio.*"]
 exclude = ["assets", "tests"]
+
+[project.scripts]
+test = "pytest:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v"
+
+[tool.coverage.run]
+source = ["py_attio"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
