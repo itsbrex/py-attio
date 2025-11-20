@@ -26,6 +26,7 @@ Usage:
 
 from typing import Dict, Any, Optional, Generator
 import requests
+import time
 
 
 class BaseClient:
@@ -44,12 +45,51 @@ class BaseClient:
             }
         )
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, max_retries: int = 3, **kwargs):
+        """Make an HTTP request with retry logic for rate limiting and server errors.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            path: API endpoint path
+            max_retries: Maximum number of retries for transient errors (default: 3)
+            **kwargs: Additional arguments to pass to requests
+
+        Returns:
+            JSON response from the API
+
+        Raises:
+            Various exceptions based on HTTP status codes
+        """
         url = f"{self.base_url}{path}"
-        response = self.session.request(method, url, **kwargs)
-        if not response.ok:
-            self._handle_error(response)
-        return response.json()
+        last_exception = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.session.request(method, url, **kwargs)
+                if not response.ok:
+                    # Handle rate limiting and server errors with retry
+                    if response.status_code in (429, 503, 502, 504):
+                        if attempt < max_retries:
+                            # Exponential backoff: 1s, 2s, 4s, 8s...
+                            wait_time = 2 ** attempt
+                            print(f"⚠️  Rate limit/server error ({response.status_code}), retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                            time.sleep(wait_time)
+                            continue
+                    self._handle_error(response)
+                return response.json()
+            except (requests.exceptions.RequestException, ConnectionError) as e:
+                last_exception = e
+                if attempt < max_retries:
+                    wait_time = 2 ** attempt
+                    print(f"⚠️  Network error: {e}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                    continue
+                raise
+
+        # If we exhausted all retries
+        if last_exception:
+            raise last_exception
+        raise RuntimeError(f"Request failed after {max_retries} retries")
 
     def _handle_error(self, response):
         """Enhanced error handling with specific HTTP status codes."""
@@ -388,49 +428,56 @@ class Client(BaseClient):
 
     # Pagination and Batch Helper Methods
 
-    def paginate_records(self, object_id: str, payload: Optional[Dict[str, Any]] = None, 
-                        page_size: int = 100) -> Generator[Dict[str, Any], None, None]:
+    def paginate_records(self, object_id: str, payload: Optional[Dict[str, Any]] = None,
+                        page_size: int = 100, delay_between_pages: float = 0.1) -> Generator[Dict[str, Any], None, None]:
         """
         Generator that automatically handles pagination for record queries.
-        
+
         Args:
             object_id: The object to query records for
             payload: Query parameters for filtering/sorting
             page_size: Number of records per page (default: 100)
-            
+            delay_between_pages: Delay in seconds between page requests to avoid rate limiting (default: 0.1)
+
         Yields:
             Individual records from all pages
         """
         if not object_id or not object_id.strip():
             raise ValueError("object_id is required and cannot be empty")
-            
+
         if payload is None:
             payload = {}
-        
+
         # Create a copy to avoid mutating the input payload
         query_payload = payload.copy()
         query_payload.setdefault('limit', page_size)
         offset = query_payload.get('offset', 0)
-        
+        page_count = 0
+
         while True:
+            # Add delay between pages (except for first page)
+            if page_count > 0 and delay_between_pages > 0:
+                time.sleep(delay_between_pages)
+
             query_payload['offset'] = offset
             response = self.list_records(object_id, query_payload)
-            
+
             if 'data' not in response:
                 break
-                
+
             records = response['data']
             if not records:
                 break
-                
+
             for record in records:
                 yield record
-                
+
             # Check if we have more records
             if len(records) < page_size:
                 break
-                
+
             offset += page_size
+            page_count += 1
 
     def paginate_entries(self, list_id: str, payload: Optional[Dict[str, Any]] = None,
                         page_size: int = 100) -> Generator[Dict[str, Any], None, None]:
