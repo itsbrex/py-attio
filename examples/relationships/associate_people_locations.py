@@ -4,7 +4,8 @@
 Associate People <> Locations based on existing Company <> People and Company <> Locations
 
 This script:
-- Iterates Companies, reads their related People and Locations
+- Efficiently processes only companies with recently created/updated people
+- Uses date-based filtering to avoid reprocessing unchanged data
 - Updates each related Person to include the Company's Locations in a chosen People->Locations relationship attribute
 
 Usage:
@@ -17,7 +18,15 @@ Usage:
     --location-object locations \
     --people-locations-attr locations \
     --page-size 100 \
+    --state-file .state.json \
     --dry-run
+
+How it works:
+1. Loads timestamp of last successful run from state file
+2. Filters people created/updated since last run using Attio's date filters
+3. Finds companies associated with those recently modified people
+4. Only processes those specific companies (much more efficient!)
+5. Saves new timestamp after successful completion
 
 Notes:
 - Attribute slugs are workspace-specific. Confirm the three slugs:
@@ -25,16 +34,35 @@ Notes:
   2) Company -> Locations relationship attribute slug (e.g. "locations")
   3) People -> Locations relationship attribute slug (e.g. "locations")
 - The script deduplicates relations and only updates when new links are needed.
+- First run processes all people; subsequent runs are incremental based on timestamps.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Set
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Set, Optional
 
 # Ensure we can import the local package when running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+# Load .env file if it exists
+def load_env_file(env_path: str = ".env"):
+    """Load environment variables from .env file if it exists."""
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    # Remove quotes if present
+                    value = value.strip('"\'')
+                    os.environ[key] = value
+
+# Load .env from repo root
+load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 import py_attio  # noqa: E402
 
@@ -84,6 +112,191 @@ def build_relationship_value(
     ]
 
 
+def load_last_run_timestamp(state_file: str) -> Optional[str]:
+    """Load the timestamp of the last successful run."""
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, 'r') as f:
+                data = json.load(f)
+                return data.get('last_run')
+    except Exception as e:
+        print(f"Warning: Failed to load state file {state_file}: {e}")
+    return None
+
+
+def save_last_run_timestamp(state_file: str, timestamp: str):
+    """Save the timestamp of the current run."""
+    try:
+        data = {'last_run': timestamp}
+        with open(state_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Failed to save state file {state_file}: {e}")
+
+
+def get_recently_modified_people(
+    client: py_attio.Client,
+    people_object: str,
+    last_run: Optional[str],
+    page_size: int,
+) -> Set[str]:
+    """Get people IDs that were created or updated since last run."""
+    people_ids: Set[str] = set()
+    
+    if not last_run:
+        print("No previous run found - this will process all people initially")
+        # If no last run, get all people (initial run)
+        for person in client.paginate_records(people_object, page_size=page_size):
+            person_id = person.get("id")
+            if person_id:
+                # Handle both string IDs and dict IDs with record_id
+                if isinstance(person_id, dict):
+                    record_id = person_id.get("record_id")
+                    if record_id:
+                        people_ids.add(record_id)
+                else:
+                    people_ids.add(person_id)
+        return people_ids
+    
+    # Filter by created_at >= last_run
+    created_filter = {
+        "filter": {
+            "created_at": {
+                "gte": last_run
+            }
+        }
+    }
+    
+    # Filter by updated_at >= last_run  
+    updated_filter = {
+        "filter": {
+            "updated_at": {
+                "gte": last_run
+            }
+        }
+    }
+    
+    print(f"Fetching people created since {last_run}")
+    try:
+        for person in client.paginate_records(people_object, page_size=page_size, **created_filter):
+            person_id = person.get("id")
+            if person_id:
+                # Handle both string IDs and dict IDs with record_id
+                if isinstance(person_id, dict):
+                    record_id = person_id.get("record_id")
+                    if record_id:
+                        people_ids.add(record_id)
+                else:
+                    people_ids.add(person_id)
+    except Exception as e:
+        print(f"Warning: Failed to filter by created_at: {e}")
+    
+    print(f"Fetching people updated since {last_run}")
+    try:
+        for person in client.paginate_records(people_object, page_size=page_size, **updated_filter):
+            person_id = person.get("id")
+            if person_id:
+                # Handle both string IDs and dict IDs with record_id
+                if isinstance(person_id, dict):
+                    record_id = person_id.get("record_id")
+                    if record_id:
+                        people_ids.add(record_id)
+                else:
+                    people_ids.add(person_id)
+    except Exception as e:
+        print(f"Warning: Failed to filter by updated_at: {e}")
+    
+    print(f"Found {len(people_ids)} people modified since last run")
+    return people_ids
+
+
+def load_checkpoint(checkpoint_file: str) -> Dict[str, Any]:
+    """Load checkpoint data from file."""
+    try:
+        if os.path.exists(checkpoint_file):
+            with open(checkpoint_file, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Warning: Failed to load checkpoint file {checkpoint_file}: {e}")
+    return {}
+
+
+def save_checkpoint(checkpoint_file: str, data: Dict[str, Any]):
+    """Save checkpoint data to file."""
+    try:
+        with open(checkpoint_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Failed to save checkpoint file {checkpoint_file}: {e}")
+
+
+def get_companies_for_people(
+    client: py_attio.Client,
+    company_object: str,
+    company_people_attr: str,
+    target_people_ids: Set[str],
+    page_size: int,
+    checkpoint_file: Optional[str] = None,
+) -> Set[str]:
+    """Find companies that have relationships with the target people."""
+    company_ids: Set[str] = set()
+    companies_seen = 0
+
+    # Load checkpoint if available
+    checkpoint = {}
+    if checkpoint_file:
+        checkpoint = load_checkpoint(checkpoint_file)
+        if checkpoint.get('company_ids'):
+            company_ids = set(checkpoint['company_ids'])
+            companies_seen = checkpoint.get('companies_seen', 0)
+            print(f"Resuming from checkpoint: {companies_seen} companies scanned, {len(company_ids)} relevant found")
+
+    try:
+        for company in client.paginate_records(company_object, page_size=page_size, delay_between_pages=0.2):
+            companies_seen += 1
+
+            # Save checkpoint every 500 companies
+            if checkpoint_file and companies_seen % 500 == 0:
+                checkpoint_data = {
+                    'companies_seen': companies_seen,
+                    'company_ids': list(company_ids)
+                }
+                save_checkpoint(checkpoint_file, checkpoint_data)
+
+            if companies_seen % 50 == 0:
+                print(f"Scanned {companies_seen} companies, found {len(company_ids)} relevant...")
+
+            company_values: Dict[str, Any] = company.get("values", {}) or {}
+            people_links = company_values.get(company_people_attr, [])
+            person_ids = extract_linked_record_ids(people_links)
+
+            # Check if any of this company's people are in our target set
+            if any(person_id in target_people_ids for person_id in person_ids):
+                company_id = company["id"]
+                if isinstance(company_id, dict):
+                    company_id = company_id.get("record_id")
+                if company_id:
+                    company_ids.add(company_id)
+    except Exception as e:
+        # Save checkpoint on error before raising
+        if checkpoint_file:
+            checkpoint_data = {
+                'companies_seen': companies_seen,
+                'company_ids': list(company_ids),
+                'error': str(e)
+            }
+            save_checkpoint(checkpoint_file, checkpoint_data)
+            print(f"💾 Checkpoint saved due to error. Progress: {companies_seen} companies scanned")
+        raise
+
+    # Clear checkpoint on successful completion
+    if checkpoint_file and os.path.exists(checkpoint_file):
+        os.remove(checkpoint_file)
+
+    print(f"Found {len(company_ids)} companies associated with recently modified people")
+    return company_ids
+
+
 def associate_people_locations(
     api_key: str,
     company_object: str,
@@ -95,14 +308,51 @@ def associate_people_locations(
     page_size: int,
     dry_run: bool,
     per_update_sleep_s: float,
+    state_file: str,
 ):
     client = py_attio.Client(api_key)
+    
+    # Get current timestamp for this run
+    current_run_time = datetime.now(timezone.utc).isoformat()
+    
+    # Load last run timestamp
+    last_run = load_last_run_timestamp(state_file)
+    
+    # Get recently modified people
+    recently_modified_people = get_recently_modified_people(
+        client, people_object, last_run, page_size
+    )
+    
+    if not recently_modified_people:
+        print("No recently modified people found. Skipping processing.")
+        save_last_run_timestamp(state_file, current_run_time)
+        return
+    
+    # Find companies associated with these people
+    checkpoint_file = state_file.replace('.json', '_checkpoint.json')
+    target_companies = get_companies_for_people(
+        client, company_object, company_people_attr, recently_modified_people, page_size,
+        checkpoint_file=checkpoint_file
+    )
+    
+    if not target_companies:
+        print("No companies found associated with recently modified people.")
+        save_last_run_timestamp(state_file, current_run_time)
+        return
 
     updates_made = 0
     companies_seen = 0
     people_considered: Set[str] = set()
+    
+    print(f"Processing {len(target_companies)} companies with recently modified people")
 
+    # Only process companies that have recently modified people
     for company in client.paginate_records(company_object, page_size=page_size):
+        company_id = company.get("id")
+        if isinstance(company_id, dict):
+            company_id = company_id.get("record_id")
+        if company_id not in target_companies:
+            continue
         companies_seen += 1
         company_values: Dict[str, Any] = company.get("values", {}) or {}
 
@@ -192,6 +442,11 @@ def associate_people_locations(
     print(
         f"Processed {companies_seen} companies. Updated {updates_made} person records. Considered {len(people_considered)} unique people."
     )
+    
+    # Save timestamp of successful run
+    if not dry_run:
+        save_last_run_timestamp(state_file, current_run_time)
+        print(f"Saved run timestamp: {current_run_time}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -241,6 +496,11 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Sleep seconds after each update to be gentle on rate limits",
     )
+    parser.add_argument(
+        "--state-file",
+        default=".associate_people_locations_state.json",
+        help="File to store last run timestamp (default: .associate_people_locations_state.json)",
+    )
     return parser.parse_args()
 
 
@@ -261,6 +521,7 @@ def main():
         page_size=args.page_size,
         dry_run=args.dry_run,
         per_update_sleep_s=args.per_update_sleep_s,
+        state_file=args.state_file,
     )
 
 
