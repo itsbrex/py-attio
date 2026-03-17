@@ -23,9 +23,18 @@
 
 🚀 Installation
 ---------------
-You can install `py-attio` from PyPI using `pip`:
+You can install `py-attio` from PyPI using `uv`:
 
-    pip install py-attio
+    uv add py-attio
+
+For local development in this repository:
+
+    uv sync --group dev
+
+Run convenience commands with `uv run`:
+
+    uv run list_objects
+    uv run associate_single_company_people_locations --help
 
 
 🔧 Usage

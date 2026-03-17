@@ -1,11 +1,15 @@
-# create_records.py
+"""Create a record in a target object."""
 
+import os
 import py_attio
 
-bearer_token = ""
-client = py_attio.Client("ATTIO_API_KEY")
+api_key = os.getenv("ATTIO_API_KEY")
+if not api_key:
+    raise SystemExit("Set ATTIO_API_KEY before running this example.")
 
-object = "object_slug"
+client = py_attio.Client(api_key)
+
+object_slug = "object_slug"
 payload = {"data": {"values": {"attribute_slug": ["attribute_value"]}}}
 
-client.create_record(object, payload)
+print(client.create_record(object_slug, payload))

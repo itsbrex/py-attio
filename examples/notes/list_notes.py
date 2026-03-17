@@ -1,10 +1,11 @@
-# list_notes.py
+"""List notes visible to the API token."""
 
-import py_attio 
+import os
+import py_attio
 
-bearer_token = ""
+api_key = os.getenv("ATTIO_API_KEY")
+if not api_key:
+    raise SystemExit("Set ATTIO_API_KEY before running this example.")
 
-client = py_attio.Client(bearer_token)
-notes = client.list_notes()
-
-print(notes)
+client = py_attio.Client(api_key)
+print(client.list_notes())

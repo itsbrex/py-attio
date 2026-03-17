@@ -7,6 +7,13 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = ["requests"]
 
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "python-dotenv>=1.0.0",
+]
+
 [project.optional-dependencies]
 test = [
     "pytest>=7.0.0",
@@ -24,7 +31,19 @@ include = ["py_attio", "py_attio.*"]
 exclude = ["assets", "tests"]
 
 [project.scripts]
-test = "pytest:main"
+test = "py_attio.cli:run_pytest"
+list_objects = "py_attio.cli:list_objects"
+list_lists = "py_attio.cli:list_lists"
+list_attributes = "py_attio.cli:list_attributes"
+list_members = "py_attio.cli:list_members"
+list_notes = "py_attio.cli:list_notes"
+create_record = "py_attio.cli:create_record"
+crud_records = "py_attio.cli:crud_records"
+comprehensive_crud_demo = "py_attio.cli:comprehensive_crud_demo"
+custom_objects = "py_attio.cli:custom_objects"
+delete_object = "py_attio.cli:delete_object"
+associate_people_locations = "py_attio.cli:associate_people_locations"
+associate_single_company_people_locations = "py_attio.cli:associate_single_company_people_locations"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

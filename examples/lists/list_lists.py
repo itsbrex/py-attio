@@ -1,10 +1,11 @@
-# list_lists.py
+"""List all lists in the workspace."""
 
+import os
 import py_attio
 
-bearer_token = ""
+api_key = os.getenv("ATTIO_API_KEY")
+if not api_key:
+    raise SystemExit("Set ATTIO_API_KEY before running this example.")
 
-client = py_attio.Client(bearer_token)
-lists = client.list_lists()
-
-print(lists)
+client = py_attio.Client(api_key)
+print(client.list_lists())
