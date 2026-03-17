@@ -35,15 +35,18 @@ Run convenience commands with `uv run`:
 
     uv run list_objects
     uv run associate_single_company_people_locations --help
+    uv run test -q
 
 
 🔧 Usage
 --------
 #### Example: Retrieving a list of Objects
 ```
+import os
 import py_attio
 
-client = py_attio.Client("ATTIO_API_KEY")
+api_key = os.getenv("ATTIO_API_KEY")
+client = py_attio.Client(api_key)
 objects = client.list_objects()
 
 print(objects)
@@ -51,23 +54,39 @@ print(objects)
 
 #### Example: Creating a Record
 ```
+import os
 import py_attio
 
-client = py_attio.Client("ATTIO_API_KEY")
+api_key = os.getenv("ATTIO_API_KEY")
+client = py_attio.Client(api_key)
 
-object = "companies"
+object_slug = "companies"
 payload = {"data": {"values": {"domains": ["example.com"]}}}
 
-client.create_record(object, payload)
+client.create_record(object_slug, payload)
 ```
 
 #### Example: Viewing access token metadata
 ```
+import os
 import py_attio
 
-client = py_attio.Client("ATTIO_API_KEY")
+api_key = os.getenv("ATTIO_API_KEY")
+client = py_attio.Client(api_key)
 print(client.identify_self())
 ```
+
+🧪 Testing
+----------
+Run tests with:
+
+    uv run test -q
+
+Integration tests are workspace-dependent. Some tests are intentionally skipped when:
+- your API key lacks required scopes (for example, comments or user-management),
+- or your workspace schema/API contract does not support specific create payloads.
+
+Detailed test guidance: [docs/testing.md](docs/testing.md)
 
 ⛓ Links
 -------

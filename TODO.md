@@ -1,37 +1,29 @@
-# TODO: Fix Failing Tests
+# TODO
 
-## Investigation Needed
+## High Priority
+1. Normalize write payload builders for workspace variability
+- Add helper utilities for record/list/attribute payload generation based on discovered schema.
+- Avoid hard-coded assumptions in integration tests and examples.
 
-### 1. Name Attribute Format Issue
-- **Problem**: Records creation fails with "An invalid value was passed to attribute with slug 'name'"
-- **Finding**: The API expects name values to include `attribute_type: 'personal-name'` field
-- **Example working format**:
-  ```python
-  'name': [{
-      'first_name': 'John',
-      'last_name': 'Doe',
-      'attribute_type': 'personal-name'
-  }]
-  ```
-- **Action**: Update all record creation tests to include this field
+2. Add contract-check preflight utilities
+- Add helper methods to inspect object/list attribute schemas before attempting create/update calls.
+- Return actionable validation messages when a workspace contract doesn't match.
 
-### 2. List Creation Payload
-- **Problem**: List creation returns "Body payload validation error"
-- **Tried**: Adding `api_slug`, wrapping in `data`, using array for `parent_object`
-- **Action**: Need to investigate exact required fields for list creation
+3. Improve CI strategy for integration tests
+- Separate smoke tests from workspace-dependent tests.
+- Add a dedicated profile/workspace for stricter, low-skip integration coverage.
 
-### 3. Attribute Creation Payload  
-- **Problem**: Custom attribute creation returns validation error
-- **Action**: Investigate required fields and valid types for custom attributes
+## Medium Priority
+1. Expand CLI coverage
+- Add CLI entrypoints for common object/record/list mutation flows.
+- Add `--help` style docs and examples for relationship scripts.
 
-### 4. API Permission Scopes
-- **Current limitations**:
-  - No User Management scope - can't test workspace members
-  - No Comments scope - can't test threads/comments
-- **Action**: Document required scopes or make tests work with basic permissions
+2. Documentation alignment
+- Add a dedicated `docs/testing.md` for skip conditions, required scopes, and expected workspace setup.
 
-## Next Steps
-1. Debug each failing endpoint with minimal payloads
-2. Update test payloads based on findings
-3. Consider adding example responses to documentation
-4. Add retry logic for transient failures
+## Low Priority
+1. Add structured logging option to examples
+- Optional verbose/debug output without editing script internals.
+
+2. Add pagination examples to README
+- Show idiomatic usage of `paginate_records` and cursor-based flows.
