@@ -178,7 +178,9 @@ def get_recently_modified_people(
     
     print(f"Fetching people created since {last_run}")
     try:
-        for person in client.paginate_records(people_object, page_size=page_size, **created_filter):
+        for person in client.paginate_records(
+            people_object, payload=created_filter, page_size=page_size
+        ):
             person_id = person.get("id")
             if person_id:
                 # Handle both string IDs and dict IDs with record_id
@@ -193,7 +195,9 @@ def get_recently_modified_people(
     
     print(f"Fetching people updated since {last_run}")
     try:
-        for person in client.paginate_records(people_object, page_size=page_size, **updated_filter):
+        for person in client.paginate_records(
+            people_object, payload=updated_filter, page_size=page_size
+        ):
             person_id = person.get("id")
             if person_id:
                 # Handle both string IDs and dict IDs with record_id

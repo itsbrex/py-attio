@@ -23,7 +23,9 @@ class TestWorkspaceMembers(BaseTestCase):
         if response['data']:
             member = response['data'][0]
             self.assertIn('id', member)
-            self.assertIn('workspace_id', member)
+            self.assertIsInstance(member['id'], dict)
+            self.assertIn('workspace_id', member['id'])
+            self.assertIn('workspace_member_id', member['id'])
             self.assertIn('email_address', member)
             self.assertIn('created_at', member)
             
@@ -47,6 +49,8 @@ class TestWorkspaceMembers(BaseTestCase):
             self.assertIsInstance(response, dict)
             self.assertIn('data', response)
             self.assertIn('id', response['data'])
-            self.assertIn('workspace_id', response['data'])
+            self.assertIsInstance(response['data']['id'], dict)
+            self.assertIn('workspace_id', response['data']['id'])
+            self.assertIn('workspace_member_id', response['data']['id'])
             self.assertIn('email_address', response['data'])
             self.assertEqual(response['data']['id']['workspace_member_id'], member_id)

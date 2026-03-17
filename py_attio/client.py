@@ -214,6 +214,10 @@ class Client(BaseClient):
             "POST", f"/objects/{object_id}/records/query", json=payload
         )
 
+    def query_records(self, object_id: str, payload=None):
+        """Alias for list_records to preserve backwards compatibility."""
+        return self.list_records(object_id, payload)
+
     def get_record(self, object_id: str, record_id: str):
         """Gets a single person, company or other record by its record_id."""
         if not object_id or not object_id.strip():
@@ -303,6 +307,10 @@ class Client(BaseClient):
     def list_members(self):
         """Lists all workspace members in the workspace."""
         return self._request("GET", "/workspace_members")
+
+    def list_workspace_members(self):
+        """Alias for list_members to preserve backwards compatibility."""
+        return self.list_members()
 
     def get_member(self, workspace_member_id: str):
         """Gets a single workspace member by ID."""

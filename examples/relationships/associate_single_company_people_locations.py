@@ -121,25 +121,65 @@ def find_company_by_domain(
     domain_attr: str = "primary_domain",
 ) -> Optional[Dict[str, Any]]:
     """Find company record by domain name."""
+    def _collect_domains(value: Any) -> List[str]:
+        domains: List[str] = []
+        if value is None:
+            return domains
+        if isinstance(value, str):
+            domains.append(value.lower())
+            return domains
+        if isinstance(value, list):
+            for item in value:
+                domains.extend(_collect_domains(item))
+            return domains
+        if isinstance(value, dict):
+            for key in ("domain", "domain_name", "value", "primary_domain"):
+                item = value.get(key)
+                if isinstance(item, str):
+                    domains.append(item.lower())
+        return domains
+
+    attrs_to_try = [domain_attr]
+    if domain_attr != "domains":
+        attrs_to_try.append("domains")
+
+    filter_errors: List[str] = []
+    for attr in attrs_to_try:
+        try:
+            query_payload = {
+                "filter": {attr: {"any_of": [domain]}},
+                "limit": 10,  # Should be unique, but limit results
+            }
+            response = client.list_records(company_object, query_payload)
+            companies = response.get("data", [])
+            if companies:
+                if attr != domain_attr:
+                    print(f"ℹ️ Domain search fallback succeeded using attribute '{attr}'")
+                return companies[0]
+        except Exception as e:
+            message = str(e)
+            if "Unknown attribute slug" in message and attr != attrs_to_try[-1]:
+                continue
+            filter_errors.append(f"{attr}: {e}")
+
+    if filter_errors:
+        print("⚠️ Filtered domain lookup failed, falling back to client-side scan.")
+
+    target = domain.lower()
     try:
-        # Query companies with domain filter
-        query_payload = {
-            "filter": {domain_attr: {"any_of": [domain]}},
-            "limit": 10,  # Should be unique, but limit results
-        }
-
-        response = client.list_records(company_object, query_payload)
-        companies = response.get("data", [])
-
-        if not companies:
-            return None
-
-        # Return first match (domains should be unique)
-        return companies[0]
-
+        for company in client.paginate_records(company_object, page_size=100):
+            values = company.get("values", {}) or {}
+            candidates: List[str] = []
+            for attr in attrs_to_try:
+                candidates.extend(_collect_domains(values.get(attr)))
+            if target in set(candidates):
+                return company
     except Exception as e:
-        print(f"‼️ FIXME: Error searching for company domain '{domain}': {e}")
-        return None
+        filter_errors.append(f"fallback_scan: {e}")
+
+    if filter_errors:
+        print(f"‼️ FIXME: Domain lookup errors: {' | '.join(filter_errors)}")
+    return None
 
 
 def find_company_by_id(

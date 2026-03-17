@@ -4,12 +4,35 @@ from tests.test_base import BaseTestCase
 
 class TestThreadsComments(BaseTestCase):
     """Test cases for threads and comments endpoints."""
+
+    def _get_threads_query(self):
+        """Build a valid threads query using an existing record context."""
+        try:
+            objects = self.client.list_objects().get('data', [])
+        except PermissionError as e:
+            self.skipTest(f"Cannot discover objects for thread query: {e}")
+
+        for obj in objects:
+            object_id = obj.get('id', {}).get('object_id')
+            if not object_id:
+                continue
+            try:
+                records = self.client.list_records(object_id, payload={'limit': 1}).get('data', [])
+            except PermissionError:
+                continue
+            if not records:
+                continue
+            record_id = records[0].get('id', {}).get('record_id')
+            if record_id:
+                return {'object': object_id, 'record_id': record_id}
+
+        self.skipTest("No accessible records available to query threads")
     
     def test_list_threads(self):
         """Test listing threads."""
-        # List threads (may be empty)
+        query = self._get_threads_query()
         try:
-            response = self.client.list_threads({})
+            response = self.client.list_threads(query)
         except PermissionError as e:
             if "Comments scope" in str(e):
                 self.skipTest("API key lacks Comments scope")
@@ -22,9 +45,9 @@ class TestThreadsComments(BaseTestCase):
     
     def test_get_thread(self):
         """Test getting a specific thread."""
-        # First check if any threads exist
+        query = self._get_threads_query()
         try:
-            threads = self.client.list_threads({})
+            threads = self.client.list_threads(query)
         except PermissionError as e:
             if "Comments scope" in str(e):
                 self.skipTest("API key lacks Comments scope")
@@ -46,9 +69,9 @@ class TestThreadsComments(BaseTestCase):
     
     def test_create_comment(self):
         """Test creating a comment on a thread."""
-        # Get an existing thread or skip test
+        query = self._get_threads_query()
         try:
-            threads = self.client.list_threads({})
+            threads = self.client.list_threads(query)
         except PermissionError as e:
             if "Comments scope" in str(e):
                 self.skipTest("API key lacks Comments scope")
