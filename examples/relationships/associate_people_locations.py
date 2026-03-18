@@ -134,6 +134,13 @@ def save_last_run_timestamp(state_file: str, timestamp: str):
         print(f"Warning: Failed to save state file {state_file}: {e}")
 
 
+def normalize_attio_timestamp(value: str) -> str:
+    """Normalize timestamps to Attio-friendly UTC RFC3339 format (seconds precision)."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    as_utc = parsed.astimezone(timezone.utc)
+    return as_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def get_recently_modified_people(
     client: py_attio.Client,
     people_object: str,
@@ -157,26 +164,41 @@ def get_recently_modified_people(
                 else:
                     people_ids.add(person_id)
         return people_ids
+
+    last_run_ts = normalize_attio_timestamp(last_run)
+    last_run_date = last_run_ts[:10]
     
-    # Filter by created_at >= last_run
-    created_filter = {
-        "filter": {
-            "created_at": {
-                "gte": last_run
-            }
+    # Attio filter operators are prefixed (e.g. $gte, $lt).
+    created_filter = {"filter": {"created_at": {"$gte": last_run_ts}}}
+
+    # Resolve a valid "updated" field from the object's attributes.
+    # `updated_at` is not guaranteed to exist in every workspace.
+    updated_filter = None
+    updated_field_name = None
+    updated_filter_supported = False
+    try:
+        attrs = client.list_attributes("objects", people_object).get("data", [])
+        attrs_by_slug = {
+            attr.get("api_slug"): (attr.get("type") or "").lower()
+            for attr in attrs
+            if attr.get("api_slug")
         }
-    }
-    
-    # Filter by updated_at >= last_run  
-    updated_filter = {
-        "filter": {
-            "updated_at": {
-                "gte": last_run
-            }
-        }
-    }
-    
-    print(f"Fetching people created since {last_run}")
+        for candidate in ("updated_at", "last_updated_at", "date_last_updated"):
+            if candidate in attrs_by_slug:
+                updated_field_name = candidate
+                updated_type = attrs_by_slug[candidate]
+                if updated_type == "date":
+                    updated_filter = {
+                        "filter": {candidate: {"value": {"$gte": last_run_date}}}
+                    }
+                else:
+                    updated_filter = {"filter": {candidate: {"$gte": last_run_ts}}}
+                updated_filter_supported = True
+                break
+    except Exception as e:
+        print(f"Warning: Failed to inspect People attributes for updated-field: {e}")
+
+    print(f"Fetching people created since {last_run_ts}")
     try:
         for person in client.paginate_records(
             people_object, payload=created_filter, page_size=page_size
@@ -192,24 +214,30 @@ def get_recently_modified_people(
                     people_ids.add(person_id)
     except Exception as e:
         print(f"Warning: Failed to filter by created_at: {e}")
-    
-    print(f"Fetching people updated since {last_run}")
-    try:
-        for person in client.paginate_records(
-            people_object, payload=updated_filter, page_size=page_size
-        ):
-            person_id = person.get("id")
-            if person_id:
-                # Handle both string IDs and dict IDs with record_id
-                if isinstance(person_id, dict):
-                    record_id = person_id.get("record_id")
-                    if record_id:
-                        people_ids.add(record_id)
-                else:
-                    people_ids.add(person_id)
-    except Exception as e:
-        print(f"Warning: Failed to filter by updated_at: {e}")
-    
+
+    if updated_filter_supported and updated_filter and updated_field_name:
+        print(f"Fetching people updated since {last_run_ts} using '{updated_field_name}'")
+        try:
+            for person in client.paginate_records(
+                people_object, payload=updated_filter, page_size=page_size
+            ):
+                person_id = person.get("id")
+                if person_id:
+                    # Handle both string IDs and dict IDs with record_id
+                    if isinstance(person_id, dict):
+                        record_id = person_id.get("record_id")
+                        if record_id:
+                            people_ids.add(record_id)
+                    else:
+                        people_ids.add(person_id)
+        except Exception as e:
+            print(f"Warning: Failed to filter by {updated_field_name}: {e}")
+    else:
+        print(
+            "No supported updated-field found (checked: updated_at, last_updated_at, date_last_updated). "
+            "Continuing with created_at filter only."
+        )
+
     print(f"Found {len(people_ids)} people modified since last run")
     return people_ids
 
@@ -317,7 +345,7 @@ def associate_people_locations(
     client = py_attio.Client(api_key)
     
     # Get current timestamp for this run
-    current_run_time = datetime.now(timezone.utc).isoformat()
+    current_run_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     
     # Load last run timestamp
     last_run = load_last_run_timestamp(state_file)
