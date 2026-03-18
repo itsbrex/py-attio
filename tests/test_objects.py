@@ -36,6 +36,7 @@ class TestObjects(BaseTestCase):
     
     def test_create_update_delete_object(self):
         """Test creating, updating, and deleting a custom object."""
+        self.require_write_access("object create/update/delete")
         # Create object
         object_name = self.generate_unique_name('object')
         create_payload = {

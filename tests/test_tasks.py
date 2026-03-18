@@ -8,6 +8,7 @@ class TestTasks(BaseTestCase):
     
     def test_create_get_update_delete_task(self):
         """Test full CRUD operations on a task."""
+        self.require_write_access("task create/update/delete")
         # Create a person to assign the task to (tasks require an assignee)
         person_payload = {
             "data": {

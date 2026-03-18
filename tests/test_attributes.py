@@ -34,6 +34,7 @@ class TestAttributes(BaseTestCase):
     
     def test_create_update_delete_attribute(self):
         """Test creating, updating, and deleting a custom attribute."""
+        self.require_write_access("attribute create/update/delete")
         # First create a custom object to add attributes to
         object_name = self.generate_unique_name('attr_object')
         object_payload = {

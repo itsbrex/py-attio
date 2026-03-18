@@ -69,6 +69,7 @@ class TestThreadsComments(BaseTestCase):
     
     def test_create_comment(self):
         """Test creating a comment on a thread."""
+        self.require_write_access("comment creation")
         query = self._get_threads_query()
         try:
             threads = self.client.list_threads(query)

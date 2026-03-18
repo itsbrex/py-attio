@@ -16,6 +16,7 @@ class TestLists(BaseTestCase):
     
     def test_create_get_delete_list(self):
         """Test creating, getting, and deleting a list."""
+        self.require_write_access("list create/delete")
         # Create a list
         list_name = self.generate_unique_name('list')
         create_payload = {
@@ -47,6 +48,7 @@ class TestLists(BaseTestCase):
     
     def test_list_entries(self):
         """Test managing list entries."""
+        self.require_write_access("list entry create/delete")
         # Create a list first
         list_name = self.generate_unique_name('entry_list')
         create_list_payload = {

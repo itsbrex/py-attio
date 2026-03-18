@@ -16,6 +16,7 @@ class TestRecords(BaseTestCase):
     
     def test_create_get_update_delete_record(self):
         """Test full CRUD operations on a record."""
+        self.require_write_access("record create/update/delete")
         # Create a person record
         create_payload = {
             "data": {
@@ -69,6 +70,7 @@ class TestRecords(BaseTestCase):
     
     def test_query_records(self):
         """Test querying records with filters."""
+        self.require_write_access("record create for query")
         # Create a test record first
         test_email = f"query_test_{self.generate_unique_name('email')}@example.com"
         create_payload = {

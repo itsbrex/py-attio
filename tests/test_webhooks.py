@@ -16,6 +16,7 @@ class TestWebhooks(BaseTestCase):
     
     def test_create_get_update_delete_webhook(self):
         """Test full CRUD operations on a webhook."""
+        self.require_write_access("webhook create/update/delete")
         # Create a webhook
         webhook_payload = {
             "data": {

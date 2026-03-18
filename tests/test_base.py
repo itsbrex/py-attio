@@ -103,3 +103,9 @@ class BaseTestCase(unittest.TestCase):
         if any(marker in message for marker in mismatch_markers):
             self.skipTest(f"{context} not supported by current workspace/API contract: {message}")
         raise exc
+
+    def require_write_access(self, context: str = "mutating test"):
+        """Skip mutating tests when READ_ONLY_TESTS is enabled."""
+        read_only = os.getenv("READ_ONLY_TESTS", "").strip().lower()
+        if read_only in {"1", "true", "yes", "on"}:
+            self.skipTest(f"READ_ONLY_TESTS enabled; skipping {context}")

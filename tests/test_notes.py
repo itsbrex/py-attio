@@ -7,6 +7,7 @@ class TestNotes(BaseTestCase):
     
     def test_create_get_delete_note(self):
         """Test creating, getting, and deleting a note."""
+        self.require_write_access("note create/delete")
         # First create a person to attach the note to
         person_payload = {
             "data": {
