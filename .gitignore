@@ -201,3 +201,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# py-attio runtime artifacts (sync state, checkpoints, audit logs, session)
+.instance/
+*_audit.jsonl
+*_state.json
+*.checkpoint
+
+# Claude Code local/session files
+.claude/settings.local.json
+.claude/logs/
+.claude/orchestration/
+*.consumed
