@@ -208,8 +208,11 @@ __marimo__/
 *_state.json
 *.checkpoint
 
-# Claude Code local/session files
+# Claude Code local/session/runtime files (keep only durable config like rules/)
 .claude/settings.local.json
 .claude/logs/
 .claude/orchestration/
+.claude/state/
+.claude/hooks/logs/
+.claude/HANDOFF.md
 *.consumed
