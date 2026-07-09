@@ -32,10 +32,15 @@ import time
 class BaseClient:
     """Internal class for interacting with the Attio API"""
 
-    def __init__(self, api_key: str):
+    #: Default (connect, read) timeout so a hung connection can never
+    #: stall a sync run indefinitely.
+    DEFAULT_TIMEOUT = (10, 60)
+
+    def __init__(self, api_key: str, timeout=DEFAULT_TIMEOUT):
 
         self.base_url = "https://api.attio.com/v2"
         self.api_key = api_key
+        self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -62,6 +67,10 @@ class BaseClient:
         """
         url = f"{self.base_url}{path}"
         last_exception = None
+        kwargs.setdefault("timeout", self.timeout)
+        # POST is only safe to retry after an ambiguous network failure when
+        # it is a query endpoint; retrying a create could duplicate records.
+        retry_safe = method.upper() != "POST" or path.endswith("/query")
 
         for attempt in range(max_retries + 1):
             try:
@@ -71,17 +80,32 @@ class BaseClient:
                     if response.status_code in (429, 503, 502, 504):
                         if attempt < max_retries:
                             # Exponential backoff: 1s, 2s, 4s, 8s...
-                            wait_time = 2 ** attempt
-                            print(f"⚠️  Rate limit/server error ({response.status_code}), retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                            wait_time = 2**attempt
+                            # Honor the server's Retry-After header when present
+                            retry_after = response.headers.get("Retry-After")
+                            if retry_after:
+                                try:
+                                    wait_time = max(wait_time, float(retry_after))
+                                except ValueError:
+                                    pass
+                            print(
+                                f"⚠️  Rate limit/server error ({response.status_code}), retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})..."
+                            )
                             time.sleep(wait_time)
                             continue
                     self._handle_error(response)
+                # Some endpoints (e.g. DELETE) return an empty body; don't
+                # treat that as a retryable network error.
+                if not response.content or not response.content.strip():
+                    return {}
                 return response.json()
             except (requests.exceptions.RequestException, ConnectionError) as e:
                 last_exception = e
-                if attempt < max_retries:
-                    wait_time = 2 ** attempt
-                    print(f"⚠️  Network error: {e}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                if retry_safe and attempt < max_retries:
+                    wait_time = 2**attempt
+                    print(
+                        f"⚠️  Network error: {e}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})..."
+                    )
                     time.sleep(wait_time)
                     continue
                 raise
@@ -96,24 +120,32 @@ class BaseClient:
         status_code = response.status_code
         try:
             error_data = response.json()
-            error_message = error_data.get('message', response.text)
+            error_message = error_data.get("message", response.text)
         except (ValueError, requests.exceptions.JSONDecodeError):
             error_message = response.text
 
         if status_code == 400:
             raise ValueError(f"Bad Request (400): {error_message}")
         elif status_code == 401:
-            raise PermissionError(f"Unauthorized (401): Invalid API key or permissions - {error_message}")
+            raise PermissionError(
+                f"Unauthorized (401): Invalid API key or permissions - {error_message}"
+            )
         elif status_code == 403:
             raise PermissionError(f"Forbidden (403): Access denied - {error_message}")
         elif status_code == 404:
-            raise FileNotFoundError(f"Not Found (404): Resource not found - {error_message}")
+            raise FileNotFoundError(
+                f"Not Found (404): Resource not found - {error_message}"
+            )
         elif status_code == 409:
             raise ValueError(f"Conflict (409): Resource conflict - {error_message}")
         elif status_code == 422:
-            raise ValueError(f"Unprocessable Entity (422): Validation error - {error_message}")
+            raise ValueError(
+                f"Unprocessable Entity (422): Validation error - {error_message}"
+            )
         elif status_code == 429:
-            raise RuntimeError(f"Rate Limited (429): Too many requests - {error_message}")
+            raise RuntimeError(
+                f"Rate Limited (429): Too many requests - {error_message}"
+            )
         elif status_code >= 500:
             raise RuntimeError(f"Server Error ({status_code}): {error_message}")
         else:
@@ -154,26 +186,28 @@ class Client(BaseClient):
         return self._request("DELETE", f"/objects/{object_id}")
 
     # Custom Object Helper Methods
-    
+
     def list_custom_objects(self):
         """Lists only user-defined (custom) objects in the workspace."""
         objects = self.list_objects()
         # Filter for custom objects (those that are not system-defined)
-        if 'data' in objects:
-            custom_objects = [obj for obj in objects['data'] if obj.get('is_system') is False]
-            return {'data': custom_objects}
+        if "data" in objects:
+            custom_objects = [
+                obj for obj in objects["data"] if obj.get("is_system") is False
+            ]
+            return {"data": custom_objects}
         return objects
 
     def get_object_schema(self, object_id: str):
         """Gets the complete schema for an object including all attributes."""
         if not object_id or not object_id.strip():
             raise ValueError("object_id is required and cannot be empty")
-            
+
         object_data = self.get_object(object_id)
-        if object_data and 'data' in object_data:
+        if object_data and "data" in object_data:
             # Get attributes for this object
-            attributes = self.list_attributes('objects', object_id)
-            object_data['data']['attributes'] = attributes.get('data', [])
+            attributes = self.list_attributes("objects", object_id)
+            object_data["data"]["attributes"] = attributes.get("data", [])
         return object_data
 
     # Attributes
@@ -203,6 +237,22 @@ class Client(BaseClient):
     def delete_attribute(self, target: str, identifier: str, attribute: str):
         """Deletes a single attribute on a given object or list."""
         return self._request("DELETE", f"/{target}/{identifier}/attributes/{attribute}")
+
+    def list_select_options(
+        self, target: str, identifier: str, attribute: str, query=None
+    ):
+        """List the options of a select/status attribute.
+
+        ``query`` may include ``{"show_archived": true}`` to include archived
+        options (they are excluded by default).
+        """
+        if query is None:
+            query = {}
+        return self._request(
+            "GET",
+            f"/{target}/{identifier}/attributes/{attribute}/options",
+            params=query,
+        )
 
     # Records
 
@@ -246,7 +296,9 @@ class Client(BaseClient):
             raise ValueError("record_id is required and cannot be empty")
         if not payload:
             raise ValueError("payload is required and cannot be empty")
-        return self._request("PATCH", f"/objects/{object_id}/records/{record_id}", json=payload)
+        return self._request(
+            "PATCH", f"/objects/{object_id}/records/{record_id}", json=payload
+        )
 
     def delete_record(self, object_id: str, record_id: str):
         """Deletes a single person, company or other record by its record_id."""
@@ -436,8 +488,13 @@ class Client(BaseClient):
 
     # Pagination and Batch Helper Methods
 
-    def paginate_records(self, object_id: str, payload: Optional[Dict[str, Any]] = None,
-                        page_size: int = 100, delay_between_pages: float = 0.1) -> Generator[Dict[str, Any], None, None]:
+    def paginate_records(
+        self,
+        object_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        page_size: int = 100,
+        delay_between_pages: float = 0.1,
+    ) -> Generator[Dict[str, Any], None, None]:
         """
         Generator that automatically handles pagination for record queries.
 
@@ -458,8 +515,11 @@ class Client(BaseClient):
 
         # Create a copy to avoid mutating the input payload
         query_payload = payload.copy()
-        query_payload.setdefault('limit', page_size)
-        offset = query_payload.get('offset', 0)
+        query_payload.setdefault("limit", page_size)
+        # The payload's own limit wins; stride must match what the API
+        # actually returns per page or records get skipped/duplicated.
+        effective_limit = query_payload["limit"]
+        offset = query_payload.get("offset", 0)
         page_count = 0
 
         while True:
@@ -467,13 +527,13 @@ class Client(BaseClient):
             if page_count > 0 and delay_between_pages > 0:
                 time.sleep(delay_between_pages)
 
-            query_payload['offset'] = offset
+            query_payload["offset"] = offset
             response = self.list_records(object_id, query_payload)
 
-            if 'data' not in response:
+            if "data" not in response:
                 break
 
-            records = response['data']
+            records = response["data"]
             if not records:
                 break
 
@@ -481,65 +541,74 @@ class Client(BaseClient):
                 yield record
 
             # Check if we have more records
-            if len(records) < page_size:
+            if len(records) < effective_limit:
                 break
 
-            offset += page_size
+            offset += len(records)
             page_count += 1
 
-    def paginate_entries(self, list_id: str, payload: Optional[Dict[str, Any]] = None,
-                        page_size: int = 100) -> Generator[Dict[str, Any], None, None]:
+    def paginate_entries(
+        self,
+        list_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        page_size: int = 100,
+    ) -> Generator[Dict[str, Any], None, None]:
         """
         Generator that automatically handles pagination for list entry queries.
-        
+
         Args:
             list_id: The list to query entries for
             payload: Query parameters for filtering/sorting
             page_size: Number of entries per page (default: 100)
-            
+
         Yields:
             Individual entries from all pages
         """
         if not list_id or not list_id.strip():
             raise ValueError("list_id is required and cannot be empty")
-            
+
         if payload is None:
             payload = {}
-            
+
         # Create a copy to avoid mutating the input payload
         query_payload = payload.copy()
-        query_payload.setdefault('limit', page_size)
-        offset = query_payload.get('offset', 0)
-        
+        query_payload.setdefault("limit", page_size)
+        # The payload's own limit wins; stride must match what the API
+        # actually returns per page or entries get skipped/duplicated.
+        effective_limit = query_payload["limit"]
+        offset = query_payload.get("offset", 0)
+
         while True:
-            query_payload['offset'] = offset
+            query_payload["offset"] = offset
             response = self.list_entries(list_id, query_payload)
-            
-            if 'data' not in response:
+
+            if "data" not in response:
                 break
-                
-            entries = response['data']
+
+            entries = response["data"]
             if not entries:
                 break
-                
+
             for entry in entries:
                 yield entry
-                
-            # Check if we have more entries
-            if len(entries) < page_size:
-                break
-                
-            offset += page_size
 
-    def batch_create_records(self, object_id: str, records: list, batch_size: int = 50) -> list:
+            # Check if we have more entries
+            if len(entries) < effective_limit:
+                break
+
+            offset += len(entries)
+
+    def batch_create_records(
+        self, object_id: str, records: list, batch_size: int = 50
+    ) -> list:
         """
         Create multiple records in batches to avoid rate limits.
-        
+
         Args:
             object_id: The object to create records for
             records: List of record payloads to create
             batch_size: Number of records to create per batch (default: 50)
-            
+
         Returns:
             List of created record responses
         """
@@ -549,15 +618,15 @@ class Client(BaseClient):
             raise ValueError("records list cannot be empty")
         if batch_size <= 0:
             raise ValueError("batch_size must be greater than 0")
-            
+
         results = []
         for i in range(0, len(records), batch_size):
-            batch = records[i:i + batch_size]
+            batch = records[i : i + batch_size]
             for record_payload in batch:
                 try:
                     result = self.create_record(object_id, record_payload)
                     results.append(result)
                 except Exception as e:
                     # Include error information in results
-                    results.append({'error': str(e), 'payload': record_payload})
+                    results.append({"error": str(e), "payload": record_payload})
         return results
