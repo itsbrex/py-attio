@@ -7,10 +7,11 @@ This script takes a company identifier (domain or Attio URL) and:
 - Finds the company record
 - Gets all associated People and Locations for that company
 - Updates each Person to include all the Company's Locations
+- Appends every attempted update to an append-only JSONL audit log
 
 Usage:
   export ATTIO_API_KEY=...  # or pass --api-key
-  
+
   # Using domain
   python examples/relationships/associate_single_company_people_locations.py \
     --company google.com \
@@ -28,170 +29,37 @@ Usage:
     --dry-run
 
 Notes:
-- For domain matching, the script searches for companies with matching domain in their primary domain field
+- For domain matching, the script searches for companies with matching domain
+  in their primary domain field
 - For Attio URLs, it extracts the company record ID from the URL
 - Attribute slugs are workspace-specific - confirm the slugs match your schema
+- Exits non-zero when any person fetch/update fails so callers can retry
 """
 
 import argparse
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 # Ensure we can import the local package when running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import py_attio  # noqa: E402
+from py_attio.lookup import (  # noqa: E402
+    extract_company_id_from_url,
+    find_company_by_domain,
+    find_company_by_id,
+)
+from py_attio.relationships import sync_person_locations  # noqa: E402
+from py_attio.utils import (  # noqa: E402
+    extract_linked_record_ids,
+    extract_record_id,
+    get_first_value,
+    load_env_file,
+)
 
-
-def extract_linked_record_ids(items: List[Dict[str, Any]]) -> List[str]:
-    """Extract target record IDs from a relationship attribute value array.
-
-    Supports common shapes:
-    - {"target_record_id": "..."}
-    - {"record_id": "..."}
-    - {"id": {"record_id": "..."}}
-    - {"target": {"record_id": "..."}}
-    """
-    ids: List[str] = []
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        if "target_record_id" in item and item["target_record_id"]:
-            ids.append(item["target_record_id"])  # type: ignore[arg-type]
-            continue
-        if "record_id" in item and item["record_id"]:
-            ids.append(item["record_id"])  # type: ignore[arg-type]
-            continue
-        target = item.get("target")
-        if isinstance(target, dict) and target.get("record_id"):
-            ids.append(target["record_id"])  # type: ignore[index]
-            continue
-        id_obj = item.get("id")
-        if isinstance(id_obj, dict) and id_obj.get("record_id"):
-            ids.append(id_obj["record_id"])  # type: ignore[index]
-            continue
-    return ids
-
-
-def build_relationship_value(
-    ids: List[str], target_object: str
-) -> List[Dict[str, str]]:
-    """Build relationship attribute payload items from record IDs.
-
-    Uses the documented shape for record relationships in write payloads:
-    [{"target_object": <object_slug>, "target_record_id": <record_id>}]
-    """
-    unique_ids: List[str] = list(dict.fromkeys([i for i in ids if i]))
-    return [
-        {"target_object": target_object, "target_record_id": record_id}
-        for record_id in unique_ids
-    ]
-
-
-def extract_company_id_from_url(url: str) -> Optional[str]:
-    """Extract company record ID from Attio URL.
-
-    Expected format: https://app.attio.com/{workspace}/company/{record_id}/...
-    """
-    try:
-        parsed = urlparse(url)
-        if "attio.com" not in parsed.netloc:
-            return None
-
-        # Split path and look for company/{id} pattern
-        path_parts = [p for p in parsed.path.split("/") if p]
-        for i, part in enumerate(path_parts):
-            if part == "company" and i + 1 < len(path_parts):
-                potential_id = path_parts[i + 1]
-                # Basic UUID validation (36 chars with hyphens)
-                if len(potential_id) == 36 and potential_id.count("-") == 4:
-                    return potential_id
-        return None
-    except Exception:
-        return None
-
-
-def find_company_by_domain(
-    client: py_attio.Client,
-    domain: str,
-    company_object: str,
-    domain_attr: str = "primary_domain",
-) -> Optional[Dict[str, Any]]:
-    """Find company record by domain name."""
-    def _collect_domains(value: Any) -> List[str]:
-        domains: List[str] = []
-        if value is None:
-            return domains
-        if isinstance(value, str):
-            domains.append(value.lower())
-            return domains
-        if isinstance(value, list):
-            for item in value:
-                domains.extend(_collect_domains(item))
-            return domains
-        if isinstance(value, dict):
-            for key in ("domain", "domain_name", "value", "primary_domain"):
-                item = value.get(key)
-                if isinstance(item, str):
-                    domains.append(item.lower())
-        return domains
-
-    attrs_to_try = [domain_attr]
-    if domain_attr != "domains":
-        attrs_to_try.append("domains")
-
-    filter_errors: List[str] = []
-    for attr in attrs_to_try:
-        try:
-            query_payload = {
-                "filter": {attr: {"any_of": [domain]}},
-                "limit": 10,  # Should be unique, but limit results
-            }
-            response = client.list_records(company_object, query_payload)
-            companies = response.get("data", [])
-            if companies:
-                if attr != domain_attr:
-                    print(f"ℹ️ Domain search fallback succeeded using attribute '{attr}'")
-                return companies[0]
-        except Exception as e:
-            message = str(e)
-            if "Unknown attribute slug" in message and attr != attrs_to_try[-1]:
-                continue
-            filter_errors.append(f"{attr}: {e}")
-
-    if filter_errors:
-        print("⚠️ Filtered domain lookup failed, falling back to client-side scan.")
-
-    target = domain.lower()
-    try:
-        for company in client.paginate_records(company_object, page_size=100):
-            values = company.get("values", {}) or {}
-            candidates: List[str] = []
-            for attr in attrs_to_try:
-                candidates.extend(_collect_domains(values.get(attr)))
-            if target in set(candidates):
-                return company
-    except Exception as e:
-        filter_errors.append(f"fallback_scan: {e}")
-
-    if filter_errors:
-        print(f"‼️ FIXME: Domain lookup errors: {' | '.join(filter_errors)}")
-    return None
-
-
-def find_company_by_id(
-    client: py_attio.Client, company_id: str, company_object: str
-) -> Optional[Dict[str, Any]]:
-    """Find company record by ID."""
-    try:
-        response = client.get_record(company_object, company_id)
-        return response.get("data")
-    except Exception as e:
-        print(f"‼️ FIXME: Error fetching company ID '{company_id}': {e}")
-        return None
+# Load .env from repo root (already-exported env vars win)
+load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 
 def associate_company_people_locations(
@@ -206,21 +74,22 @@ def associate_company_people_locations(
     domain_attr: str,
     dry_run: bool,
     per_update_sleep_s: float,
-):
+    audit_file: str = "",
+) -> int:
+    """Run the single-company sync. Returns a process exit code."""
     client = py_attio.Client(api_key)
+    audit = audit_file or None
 
     # Determine if input is URL or domain
     company_record = None
     if company_identifier.startswith("http"):
-        # Extract company ID from URL
         company_id = extract_company_id_from_url(company_identifier)
         if not company_id:
             print(f"❌ Could not extract company ID from URL: {company_identifier}")
-            return
+            return 1
         print(f"🔍 Looking up company by ID: {company_id}")
         company_record = find_company_by_id(client, company_id, company_object)
     else:
-        # Treat as domain
         print(f"🔍 Looking up company by domain: {company_identifier}")
         company_record = find_company_by_domain(
             client, company_identifier, company_object, domain_attr
@@ -228,123 +97,62 @@ def associate_company_people_locations(
 
     if not company_record:
         print(f"❌ Company not found: {company_identifier}")
-        return
+        return 1
 
     # Extract company info
-    company_id = company_record.get("id", {}).get("record_id")
+    company_id = extract_record_id(company_record)
     company_values = company_record.get("values", {}) or {}
-
-    # Get company name for display - handle different possible structures
-    company_name = "Unknown"
-
-    # Try common name attribute patterns
-    name_candidates = ["name", "company_name", "title"]
-    for name_attr in name_candidates:
-        if name_attr in company_values and company_values[name_attr]:
-            name_value = company_values[name_attr]
-            if isinstance(name_value, list) and name_value:
-                # Handle list format - extract value from first item
-                first_item = name_value[0]
-                if isinstance(first_item, dict):
-                    company_name = first_item.get("value", str(first_item))
-                else:
-                    company_name = str(first_item)
-            elif isinstance(name_value, str):
-                company_name = name_value
-            elif isinstance(name_value, dict):
-                company_name = name_value.get("value", str(name_value))
-            else:
-                company_name = str(name_value)
-            break
+    company_name = get_first_value(company_values, "name")
 
     print(f"✅ Found company: {company_name} (ID: {company_id})")
 
     # Extract related people and locations
-    people_links = company_values.get(company_people_attr, [])
-    location_links = company_values.get(company_locations_attr, [])
-
-    person_ids = extract_linked_record_ids(people_links)
-    location_ids = extract_linked_record_ids(location_links)
+    person_ids = extract_linked_record_ids(company_values.get(company_people_attr, []))
+    location_ids = extract_linked_record_ids(
+        company_values.get(company_locations_attr, [])
+    )
 
     print(f"📊 Company has {len(person_ids)} people and {len(location_ids)} locations")
 
     if not person_ids:
         print("⚠️ No people associated with this company")
-        return
+        return 0
 
     if not location_ids:
         print("⚠️ No locations associated with this company")
-        return
+        return 0
 
     unique_location_ids = list(dict.fromkeys(location_ids))
     updates_made = 0
+    failures = 0
 
-    # Update each person
     for person_id in person_ids:
         if not person_id:
             continue
+        result = sync_person_locations(
+            client,
+            people_object,
+            location_object,
+            people_locations_attr,
+            person_id,
+            company_id or "",
+            company_name,
+            unique_location_ids,
+            dry_run,
+            audit,
+        )
+        if result is None:
+            failures += 1
+        elif result and not dry_run:
+            updates_made += 1
+            if per_update_sleep_s > 0:
+                time.sleep(per_update_sleep_s)
 
-        # Fetch person's current locations to avoid overwriting unrelated links
-        try:
-            person = client.get_record(people_object, person_id)
-        except Exception as e:
-            print(f"‼️ FIXME: Failed to fetch person {person_id}: {e}")
-            continue
-
-        person_values: Dict[str, Any] = person.get("data", {}).get("values", {}) or {}
-
-        # Get person name for display
-        person_name = "Unknown"
-        if "name" in person_values and person_values["name"]:
-            name_data = (
-                person_values["name"][0]
-                if isinstance(person_values["name"], list)
-                else {}
-            )
-            if isinstance(name_data, dict):
-                first = name_data.get("first_name", "")
-                last = name_data.get("last_name", "")
-                person_name = f"{first} {last}".strip() or "Unknown"
-
-        existing_links = person_values.get(people_locations_attr, [])
-        existing_location_ids = set(extract_linked_record_ids(existing_links))
-
-        # Compute union
-        desired_ids = list(existing_location_ids.union(unique_location_ids))
-
-        # No changes needed
-        if existing_location_ids.issuperset(unique_location_ids):
-            print(f"✅ {person_name} already has all company locations")
-            continue
-
-        new_locations = set(unique_location_ids) - existing_location_ids
-        payload = {
-            "data": {
-                "values": {
-                    people_locations_attr: build_relationship_value(
-                        desired_ids, location_object
-                    )
-                }
-            }
-        }
-
-        if dry_run:
-            print(
-                f"DRY-RUN: Would update {person_name} ({person_id}) to add {len(new_locations)} new locations"
-            )
-        else:
-            try:
-                client.update_record(people_object, person_id, payload)
-                updates_made += 1
-                print(
-                    f"✅ Updated {person_name} with {len(new_locations)} new locations"
-                )
-                if per_update_sleep_s > 0:
-                    time.sleep(per_update_sleep_s)
-            except Exception as e:
-                print(f"‼️ FIXME: Failed to update {person_name} ({person_id}): {e}")
-
-    print(f"\n🎉 Completed! Updated {updates_made} people with company locations.")
+    print(
+        f"\n🎉 Completed! Updated {updates_made} people with company locations. "
+        f"Failures: {failures}."
+    )
+    return 1 if failures else 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -401,6 +209,14 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Sleep seconds after each update to be gentle on rate limits",
     )
+    parser.add_argument(
+        "--audit-file",
+        default=".associate_people_locations_audit.jsonl",
+        help=(
+            "Append-only JSONL audit log of every association attempt "
+            "(pass empty string to disable)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -410,18 +226,21 @@ def main():
         print("Error: ATTIO_API_KEY not set and --api-key not provided")
         sys.exit(1)
 
-    associate_company_people_locations(
-        api_key=args.api_key,
-        company_identifier=args.company,
-        company_object=args.company_object,
-        company_people_attr=args.company_people_attr,
-        company_locations_attr=args.company_locations_attr,
-        people_object=args.people_object,
-        location_object=args.location_object,
-        people_locations_attr=args.people_locations_attr,
-        domain_attr=args.domain_attr,
-        dry_run=args.dry_run,
-        per_update_sleep_s=args.per_update_sleep_s,
+    sys.exit(
+        associate_company_people_locations(
+            api_key=args.api_key,
+            company_identifier=args.company,
+            company_object=args.company_object,
+            company_people_attr=args.company_people_attr,
+            company_locations_attr=args.company_locations_attr,
+            people_object=args.people_object,
+            location_object=args.location_object,
+            people_locations_attr=args.people_locations_attr,
+            domain_attr=args.domain_attr,
+            dry_run=args.dry_run,
+            per_update_sleep_s=args.per_update_sleep_s,
+            audit_file=args.audit_file,
+        )
     )
 
 

@@ -6,7 +6,8 @@ Associate People <> Locations based on existing Company <> People and Company <>
 This script:
 - Efficiently processes only companies with recently created/updated people
 - Uses date-based filtering to avoid reprocessing unchanged data
-- Updates each related Person to include the Company's Locations in a chosen People->Locations relationship attribute
+- Updates each related Person to include the Company's Locations in a chosen
+  People->Locations relationship attribute
 
 Usage:
   export ATTIO_API_KEY=...  # or pass --api-key
@@ -24,309 +25,45 @@ Usage:
 How it works:
 1. Loads timestamp of last successful run from state file
 2. Filters people created/updated since last run using Attio's date filters
-3. Finds companies associated with those recently modified people
+3. Finds companies associated with those recently modified people (single
+   checkpointed scan; an interrupted scan resumes where it left off)
 4. Only processes those specific companies (much more efficient!)
-5. Saves new timestamp after successful completion
+5. Saves new timestamp only after a fully successful, non-dry-run completion
+6. Appends every attempted update (success, dry-run, or failure) to an
+   append-only JSONL audit log so the paper trail of who is associated to
+   which locations is never lost
 
-Notes:
-- Attribute slugs are workspace-specific. Confirm the three slugs:
-  1) Company -> People relationship attribute slug (e.g. "people")
-  2) Company -> Locations relationship attribute slug (e.g. "locations")
-  3) People -> Locations relationship attribute slug (e.g. "locations")
-- The script deduplicates relations and only updates when new links are needed.
-- First run processes all people; subsequent runs are incremental based on timestamps.
+Reliability guarantees:
+- State/checkpoint files are written atomically (crash-safe)
+- Dry runs never advance the incremental window
+- If any update fails, the timestamp is NOT advanced; the next run retries
+  the same window. Retries are idempotent (superset check skips done work).
 """
 
 import argparse
-import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Set, Optional
 
 # Ensure we can import the local package when running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# Load .env file if it exists
-def load_env_file(env_path: str = ".env"):
-    """Load environment variables from .env file if it exists."""
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    # Remove quotes if present
-                    value = value.strip('"\'')
-                    os.environ[key] = value
-
-# Load .env from repo root
-load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-
 import py_attio  # noqa: E402
+from py_attio.relationships import (  # noqa: E402
+    collect_target_companies,
+    get_recently_modified_people,
+    sync_person_locations,
+)
+from py_attio.utils import (  # noqa: E402
+    checkpoint_path_for,
+    load_env_file,
+    load_json_state,
+    save_json_state,
+    utc_now_iso,
+)
 
-
-def extract_linked_record_ids(items: List[Dict[str, Any]]) -> List[str]:
-    """Extract target record IDs from a relationship attribute value array.
-
-    Supports common shapes:
-    - {"target_record_id": "..."}
-    - {"record_id": "..."}
-    - {"id": {"record_id": "..."}}
-    - {"target": {"record_id": "..."}}
-    """
-    ids: List[str] = []
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        if "target_record_id" in item and item["target_record_id"]:
-            ids.append(item["target_record_id"])  # type: ignore[arg-type]
-            continue
-        if "record_id" in item and item["record_id"]:
-            ids.append(item["record_id"])  # type: ignore[arg-type]
-            continue
-        target = item.get("target")
-        if isinstance(target, dict) and target.get("record_id"):
-            ids.append(target["record_id"])  # type: ignore[index]
-            continue
-        id_obj = item.get("id")
-        if isinstance(id_obj, dict) and id_obj.get("record_id"):
-            ids.append(id_obj["record_id"])  # type: ignore[index]
-            continue
-    return ids
-
-
-def build_relationship_value(
-    ids: List[str], target_object: str
-) -> List[Dict[str, str]]:
-    """Build relationship attribute payload items from record IDs.
-
-    Uses the documented shape for record relationships in write payloads:
-    [{"target_object": <object_slug>, "target_record_id": <record_id>}]
-    """
-    unique_ids: List[str] = list(dict.fromkeys([i for i in ids if i]))
-    return [
-        {"target_object": target_object, "target_record_id": record_id}
-        for record_id in unique_ids
-    ]
-
-
-def load_last_run_timestamp(state_file: str) -> Optional[str]:
-    """Load the timestamp of the last successful run."""
-    try:
-        if os.path.exists(state_file):
-            with open(state_file, 'r') as f:
-                data = json.load(f)
-                return data.get('last_run')
-    except Exception as e:
-        print(f"Warning: Failed to load state file {state_file}: {e}")
-    return None
-
-
-def save_last_run_timestamp(state_file: str, timestamp: str):
-    """Save the timestamp of the current run."""
-    try:
-        data = {'last_run': timestamp}
-        with open(state_file, 'w') as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Failed to save state file {state_file}: {e}")
-
-
-def normalize_attio_timestamp(value: str) -> str:
-    """Normalize timestamps to Attio-friendly UTC RFC3339 format (seconds precision)."""
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    as_utc = parsed.astimezone(timezone.utc)
-    return as_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def get_recently_modified_people(
-    client: py_attio.Client,
-    people_object: str,
-    last_run: Optional[str],
-    page_size: int,
-) -> Set[str]:
-    """Get people IDs that were created or updated since last run."""
-    people_ids: Set[str] = set()
-    
-    if not last_run:
-        print("No previous run found - this will process all people initially")
-        # If no last run, get all people (initial run)
-        for person in client.paginate_records(people_object, page_size=page_size):
-            person_id = person.get("id")
-            if person_id:
-                # Handle both string IDs and dict IDs with record_id
-                if isinstance(person_id, dict):
-                    record_id = person_id.get("record_id")
-                    if record_id:
-                        people_ids.add(record_id)
-                else:
-                    people_ids.add(person_id)
-        return people_ids
-
-    last_run_ts = normalize_attio_timestamp(last_run)
-    last_run_date = last_run_ts[:10]
-    
-    # Attio filter operators are prefixed (e.g. $gte, $lt).
-    created_filter = {"filter": {"created_at": {"$gte": last_run_ts}}}
-
-    # Resolve a valid "updated" field from the object's attributes.
-    # `updated_at` is not guaranteed to exist in every workspace.
-    updated_filter = None
-    updated_field_name = None
-    updated_filter_supported = False
-    try:
-        attrs = client.list_attributes("objects", people_object).get("data", [])
-        attrs_by_slug = {
-            attr.get("api_slug"): (attr.get("type") or "").lower()
-            for attr in attrs
-            if attr.get("api_slug")
-        }
-        for candidate in ("updated_at", "last_updated_at", "date_last_updated"):
-            if candidate in attrs_by_slug:
-                updated_field_name = candidate
-                updated_type = attrs_by_slug[candidate]
-                if updated_type == "date":
-                    updated_filter = {
-                        "filter": {candidate: {"value": {"$gte": last_run_date}}}
-                    }
-                else:
-                    updated_filter = {"filter": {candidate: {"$gte": last_run_ts}}}
-                updated_filter_supported = True
-                break
-    except Exception as e:
-        print(f"Warning: Failed to inspect People attributes for updated-field: {e}")
-
-    print(f"Fetching people created since {last_run_ts}")
-    try:
-        for person in client.paginate_records(
-            people_object, payload=created_filter, page_size=page_size
-        ):
-            person_id = person.get("id")
-            if person_id:
-                # Handle both string IDs and dict IDs with record_id
-                if isinstance(person_id, dict):
-                    record_id = person_id.get("record_id")
-                    if record_id:
-                        people_ids.add(record_id)
-                else:
-                    people_ids.add(person_id)
-    except Exception as e:
-        print(f"Warning: Failed to filter by created_at: {e}")
-
-    if updated_filter_supported and updated_filter and updated_field_name:
-        print(f"Fetching people updated since {last_run_ts} using '{updated_field_name}'")
-        try:
-            for person in client.paginate_records(
-                people_object, payload=updated_filter, page_size=page_size
-            ):
-                person_id = person.get("id")
-                if person_id:
-                    # Handle both string IDs and dict IDs with record_id
-                    if isinstance(person_id, dict):
-                        record_id = person_id.get("record_id")
-                        if record_id:
-                            people_ids.add(record_id)
-                    else:
-                        people_ids.add(person_id)
-        except Exception as e:
-            print(f"Warning: Failed to filter by {updated_field_name}: {e}")
-    else:
-        print(
-            "No supported updated-field found (checked: updated_at, last_updated_at, date_last_updated). "
-            "Continuing with created_at filter only."
-        )
-
-    print(f"Found {len(people_ids)} people modified since last run")
-    return people_ids
-
-
-def load_checkpoint(checkpoint_file: str) -> Dict[str, Any]:
-    """Load checkpoint data from file."""
-    try:
-        if os.path.exists(checkpoint_file):
-            with open(checkpoint_file, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Warning: Failed to load checkpoint file {checkpoint_file}: {e}")
-    return {}
-
-
-def save_checkpoint(checkpoint_file: str, data: Dict[str, Any]):
-    """Save checkpoint data to file."""
-    try:
-        with open(checkpoint_file, 'w') as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Failed to save checkpoint file {checkpoint_file}: {e}")
-
-
-def get_companies_for_people(
-    client: py_attio.Client,
-    company_object: str,
-    company_people_attr: str,
-    target_people_ids: Set[str],
-    page_size: int,
-    checkpoint_file: Optional[str] = None,
-) -> Set[str]:
-    """Find companies that have relationships with the target people."""
-    company_ids: Set[str] = set()
-    companies_seen = 0
-
-    # Load checkpoint if available
-    checkpoint = {}
-    if checkpoint_file:
-        checkpoint = load_checkpoint(checkpoint_file)
-        if checkpoint.get('company_ids'):
-            company_ids = set(checkpoint['company_ids'])
-            companies_seen = checkpoint.get('companies_seen', 0)
-            print(f"Resuming from checkpoint: {companies_seen} companies scanned, {len(company_ids)} relevant found")
-
-    try:
-        for company in client.paginate_records(company_object, page_size=page_size, delay_between_pages=0.2):
-            companies_seen += 1
-
-            # Save checkpoint every 500 companies
-            if checkpoint_file and companies_seen % 500 == 0:
-                checkpoint_data = {
-                    'companies_seen': companies_seen,
-                    'company_ids': list(company_ids)
-                }
-                save_checkpoint(checkpoint_file, checkpoint_data)
-
-            if companies_seen % 50 == 0:
-                print(f"Scanned {companies_seen} companies, found {len(company_ids)} relevant...")
-
-            company_values: Dict[str, Any] = company.get("values", {}) or {}
-            people_links = company_values.get(company_people_attr, [])
-            person_ids = extract_linked_record_ids(people_links)
-
-            # Check if any of this company's people are in our target set
-            if any(person_id in target_people_ids for person_id in person_ids):
-                company_id = company["id"]
-                if isinstance(company_id, dict):
-                    company_id = company_id.get("record_id")
-                if company_id:
-                    company_ids.add(company_id)
-    except Exception as e:
-        # Save checkpoint on error before raising
-        if checkpoint_file:
-            checkpoint_data = {
-                'companies_seen': companies_seen,
-                'company_ids': list(company_ids),
-                'error': str(e)
-            }
-            save_checkpoint(checkpoint_file, checkpoint_data)
-            print(f"💾 Checkpoint saved due to error. Progress: {companies_seen} companies scanned")
-        raise
-
-    # Clear checkpoint on successful completion
-    if checkpoint_file and os.path.exists(checkpoint_file):
-        os.remove(checkpoint_file)
-
-    print(f"Found {len(company_ids)} companies associated with recently modified people")
-    return company_ids
+# Load .env from repo root (already-exported env vars win)
+load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 
 def associate_people_locations(
@@ -341,144 +78,114 @@ def associate_people_locations(
     dry_run: bool,
     per_update_sleep_s: float,
     state_file: str,
-):
+    audit_file: str = "",
+) -> int:
+    """Run the sync. Returns a process exit code (0 = clean, 1 = had failures)."""
     client = py_attio.Client(api_key)
-    
+    audit = audit_file or None
+
     # Get current timestamp for this run
-    current_run_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    
+    current_run_time = utc_now_iso()
+
     # Load last run timestamp
-    last_run = load_last_run_timestamp(state_file)
-    
+    last_run = load_json_state(state_file).get("last_run")
+
+    def _finish_clean() -> int:
+        # Dry runs must never advance the incremental window: a later real
+        # run still needs to see everything the dry run previewed.
+        if dry_run:
+            print("DRY-RUN: state file not updated")
+            return 0
+        if not save_json_state(state_file, {"last_run": current_run_time}):
+            print("‼️ State save failed; next run will reprocess this window")
+            return 1
+        print(f"Saved run timestamp: {current_run_time}")
+        return 0
+
     # Get recently modified people
     recently_modified_people = get_recently_modified_people(
         client, people_object, last_run, page_size
     )
-    
+
     if not recently_modified_people:
         print("No recently modified people found. Skipping processing.")
-        save_last_run_timestamp(state_file, current_run_time)
-        return
-    
-    # Find companies associated with these people
-    checkpoint_file = state_file.replace('.json', '_checkpoint.json')
-    target_companies = get_companies_for_people(
-        client, company_object, company_people_attr, recently_modified_people, page_size,
-        checkpoint_file=checkpoint_file
+        return _finish_clean()
+
+    # Find companies associated with these people (single checkpointed scan)
+    target_companies = collect_target_companies(
+        client,
+        company_object,
+        company_people_attr,
+        company_locations_attr,
+        recently_modified_people,
+        page_size,
+        checkpoint_file=checkpoint_path_for(state_file),
     )
-    
+
     if not target_companies:
         print("No companies found associated with recently modified people.")
-        save_last_run_timestamp(state_file, current_run_time)
-        return
+        return _finish_clean()
 
     updates_made = 0
-    companies_seen = 0
-    people_considered: Set[str] = set()
-    
+    failures = 0
+    companies_processed = 0
+    people_updated = set()
+
     print(f"Processing {len(target_companies)} companies with recently modified people")
 
-    # Only process companies that have recently modified people
-    for company in client.paginate_records(company_object, page_size=page_size):
-        company_id = company.get("id")
-        if isinstance(company_id, dict):
-            company_id = company_id.get("record_id")
-        if company_id not in target_companies:
-            continue
-        companies_seen += 1
-        company_values: Dict[str, Any] = company.get("values", {}) or {}
-
-        # Get company name for logging
-        company_name = "Unknown"
-        if "name" in company_values and company_values["name"]:
-            name_value = company_values["name"]
-            if isinstance(name_value, list) and name_value:
-                first_item = name_value[0]
-                if isinstance(first_item, dict):
-                    company_name = first_item.get("value", str(first_item))
-                else:
-                    company_name = str(first_item)
-
-        people_links = company_values.get(company_people_attr, [])
-        location_links = company_values.get(company_locations_attr, [])
-
-        person_ids = extract_linked_record_ids(people_links)
-        location_ids = extract_linked_record_ids(location_links)
+    for company_id, company_data in target_companies.items():
+        companies_processed += 1
+        company_name = company_data.get("name", "Unknown")
+        person_ids = [p for p in company_data.get("people", []) if p]
+        location_ids = list(dict.fromkeys(company_data.get("locations", [])))
 
         if not person_ids or not location_ids:
-            if companies_seen % 10 == 0:  # Log every 10 companies processed
-                print(f"📊 Processed {companies_seen} companies so far...")
+            if companies_processed % 10 == 0:
+                print(f"📊 Processed {companies_processed} companies so far...")
             continue
 
         print(
-            f"🏢 Processing {company_name}: {len(person_ids)} people, {len(location_ids)} locations"
+            f"🏢 Processing {company_name}: {len(person_ids)} people, "
+            f"{len(location_ids)} locations"
         )
 
-        unique_location_ids = list(dict.fromkeys(location_ids))
-
         for person_id in person_ids:
-            if not person_id:
-                continue
-            # Fetch person's current locations to avoid overwriting unrelated links
-            try:
-                person = client.get_record(people_object, person_id)
-            except Exception as e:
-                print(f"‼️ FIXME: Failed to fetch person {person_id}: {e}")
-                continue
-
-            person_values: Dict[str, Any] = (
-                person.get("data", {}).get("values", {}) or {}
+            result = sync_person_locations(
+                client,
+                people_object,
+                location_object,
+                people_locations_attr,
+                person_id,
+                company_id,
+                company_name,
+                location_ids,
+                dry_run,
+                audit,
             )
-            existing_links = person_values.get(people_locations_attr, [])
-            existing_location_ids = set(extract_linked_record_ids(existing_links))
-
-            # Compute union
-            desired_ids = list(existing_location_ids.union(unique_location_ids))
-
-            # No changes needed
-            if existing_location_ids.issuperset(unique_location_ids):
-                continue
-
-            payload = {
-                "data": {
-                    "values": {
-                        people_locations_attr: build_relationship_value(
-                            desired_ids, location_object
-                        )
-                    }
-                }
-            }
-
-            if dry_run:
-                print(
-                    f"DRY-RUN: Would update {people_object}/{person_id} set '{people_locations_attr}' with {len(desired_ids)} locations (adding {len(set(unique_location_ids) - existing_location_ids)})"
-                )
-            else:
-                try:
-                    client.update_record(people_object, person_id, payload)
-                    updates_made += 1
-                    people_considered.add(person_id)
-                    new_locations_count = len(
-                        set(unique_location_ids) - existing_location_ids
-                    )
-                    print(
-                        f"✅ Updated person {person_id} with {new_locations_count} new locations"
-                    )
-                    if per_update_sleep_s > 0:
-                        time.sleep(per_update_sleep_s)
-                except Exception as e:
-                    print(
-                        f"‼️ FIXME: Failed to update {people_object}/{person_id} for locations: {e}"
-                    )
+            if result is None:
+                failures += 1
+            elif result and not dry_run:
+                updates_made += 1
+                people_updated.add(person_id)
+                if per_update_sleep_s > 0:
+                    time.sleep(per_update_sleep_s)
 
     print(
-        f"Processed {companies_seen} companies. Updated {updates_made} person records. Considered {len(people_considered)} unique people."
+        f"Processed {companies_processed} companies. Updated {updates_made} person "
+        f"records ({len(people_updated)} unique people). Failures: {failures}."
     )
-    
-    # Save timestamp of successful run
-    if not dry_run:
-        save_last_run_timestamp(state_file, current_run_time)
-        print(f"Saved run timestamp: {current_run_time}")
+
+    if failures:
+        # Do not advance the timestamp: the next run must retry this window.
+        # Already-updated people are skipped by the superset check, so the
+        # retry only re-attempts what actually failed.
+        print(
+            f"‼️ {failures} failure(s) — run timestamp NOT advanced; "
+            "next run retries this window"
+        )
+        return 1
+
+    return _finish_clean()
 
 
 def parse_args() -> argparse.Namespace:
@@ -533,6 +240,15 @@ def parse_args() -> argparse.Namespace:
         default=".associate_people_locations_state.json",
         help="File to store last run timestamp (default: .associate_people_locations_state.json)",
     )
+    parser.add_argument(
+        "--audit-file",
+        default=".associate_people_locations_audit.jsonl",
+        help=(
+            "Append-only JSONL audit log of every association attempt "
+            "(default: .associate_people_locations_audit.jsonl; "
+            "pass empty string to disable)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -542,18 +258,21 @@ def main():
         print("Error: ATTIO_API_KEY not set and --api-key not provided")
         sys.exit(1)
 
-    associate_people_locations(
-        api_key=args.api_key,
-        company_object=args.company_object,
-        company_people_attr=args.company_people_attr,
-        company_locations_attr=args.company_locations_attr,
-        people_object=args.people_object,
-        location_object=args.location_object,
-        people_locations_attr=args.people_locations_attr,
-        page_size=args.page_size,
-        dry_run=args.dry_run,
-        per_update_sleep_s=args.per_update_sleep_s,
-        state_file=args.state_file,
+    sys.exit(
+        associate_people_locations(
+            api_key=args.api_key,
+            company_object=args.company_object,
+            company_people_attr=args.company_people_attr,
+            company_locations_attr=args.company_locations_attr,
+            people_object=args.people_object,
+            location_object=args.location_object,
+            people_locations_attr=args.people_locations_attr,
+            page_size=args.page_size,
+            dry_run=args.dry_run,
+            per_update_sleep_s=args.per_update_sleep_s,
+            state_file=args.state_file,
+            audit_file=args.audit_file,
+        )
     )
 
 
