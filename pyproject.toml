@@ -5,7 +5,9 @@ description = "A lightweight Python wrapper for the Attio API."
 authors = [{ name = "Benjamin Hawn", email = "ben@benjaminhawn.com" }]
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = ["requests"]
+# requests>=2.32.4 required: fixes CVE-2024-35195 (cert verification bypass)
+# and CVE-2024-47081 (.netrc credential leak)
+dependencies = ["requests>=2.32.4"]
 
 [dependency-groups]
 dev = [
@@ -44,6 +46,7 @@ custom_objects = "py_attio.cli:custom_objects"
 delete_object = "py_attio.cli:delete_object"
 associate_people_locations = "py_attio.cli:associate_people_locations"
 associate_single_company_people_locations = "py_attio.cli:associate_single_company_people_locations"
+update_portfolio_size = "py_attio.cli:update_portfolio_size"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

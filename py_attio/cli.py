@@ -72,3 +72,7 @@ def associate_people_locations() -> None:
 
 def associate_single_company_people_locations() -> None:
     _run_example("examples/relationships/associate_single_company_people_locations.py")
+
+
+def update_portfolio_size() -> None:
+    _run_example("examples/portfolio/update_portfolio_size.py")
